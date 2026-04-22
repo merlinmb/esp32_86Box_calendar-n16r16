@@ -4,6 +4,7 @@
 #include <Arduino_GFX_Library.h>
 #include <Wire.h>
 #include <TAMC_GT911.h>
+#include <WiFi.h>
 #include <lvgl.h>
 #include <TimeLib.h>
 #include <stdio.h>
@@ -249,6 +250,7 @@ const lv_color_t COLOR_TEXT_1      = lv_color_hex(0xe8eaf2);
 const lv_color_t COLOR_TEXT_2      = lv_color_hex(0x8b90aa);
 const lv_color_t COLOR_TEXT_3      = lv_color_hex(0x50546a);
 const lv_color_t COLOR_ACCENT      = lv_color_hex(0x5b8ef0);
+const lv_color_t COLOR_AZURE       = lv_color_hex(0x00a6ff);
 const lv_color_t COLOR_ALERT       = lv_color_hex(0xe26d5a);
 const lv_color_t COLOR_CYAN        = lv_color_hex(0x00e5ff);
 const lv_color_t COLOR_CLOCK       = lv_color_hex(0xffffff);
@@ -263,6 +265,7 @@ lv_color_t source_color(const char *source) {
 enum class ScreenMode { Setup, Connecting, Agenda };
 
 lv_obj_t *s_card             = nullptr;
+lv_obj_t *s_title_label      = nullptr;
 lv_obj_t *s_offline_label    = nullptr;
 lv_obj_t *s_wifi_status_label = nullptr;
 lv_obj_t *s_mqtt_status_label = nullptr;
@@ -271,6 +274,7 @@ ScreenMode s_mode             = ScreenMode::Setup;
 
 bool s_wifi_connected = false;
 bool s_mqtt_connected = false;
+bool s_title_expanded = false;
 
 lv_obj_t *s_body             = nullptr;
 lv_obj_t *s_sticky_day_label = nullptr;
@@ -283,6 +287,7 @@ uint8_t   s_day_anchor_count = 0;
 lv_obj_t  *s_expanded_row  = nullptr;
 lv_timer_t *s_expand_timer = nullptr;
 lv_timer_t *s_return_timer = nullptr;
+lv_timer_t *s_title_timer  = nullptr;
 
 lv_obj_t *s_event_row_objs[CAL_MAX_EVENTS];
 uint8_t   s_event_row_count = 0;
@@ -310,11 +315,13 @@ time_t tm_to_epoch_utc(const struct tm &t) {
 void cleanup_timers() {
     if (s_expand_timer) { lv_timer_del(s_expand_timer); s_expand_timer = nullptr; }
     if (s_return_timer) { lv_timer_del(s_return_timer); s_return_timer = nullptr; }
+    if (s_title_timer) { lv_timer_del(s_title_timer); s_title_timer = nullptr; }
     s_expanded_row     = nullptr;
     s_day_anchor_count = 0;
     s_event_row_count  = 0;
     s_body             = nullptr;
     s_sticky_day_label = nullptr;
+    s_title_expanded   = false;
 }
 
 void format_hhmm(char *out, size_t out_size) {
@@ -359,6 +366,55 @@ void set_text(lv_obj_t *lbl, const char *text) {
     if (lbl) lv_label_set_text(lbl, text ? text : "");
 }
 
+void collapse_title();
+
+void update_title_label() {
+    if (!s_title_label) return;
+
+    if (!s_title_expanded || WiFi.status() != WL_CONNECTED) {
+        lv_label_set_text(s_title_label, "nextUp");
+        return;
+    }
+
+    char title_text[48];
+    snprintf(title_text, sizeof(title_text), "nextUp %s", WiFi.localIP().toString().c_str());
+    lv_label_set_text(s_title_label, title_text);
+}
+
+void collapse_title() {
+    s_title_expanded = false;
+    if (s_title_timer) {
+        lv_timer_del(s_title_timer);
+        s_title_timer = nullptr;
+    }
+    update_title_label();
+}
+
+static void title_timer_cb(lv_timer_t *) {
+    collapse_title();
+}
+
+static void title_click_cb(lv_event_t *) {
+    if (s_title_expanded) {
+        collapse_title();
+        return;
+    }
+
+    if (WiFi.status() != WL_CONNECTED) {
+        collapse_title();
+        return;
+    }
+
+    s_title_expanded = true;
+    update_title_label();
+    if (s_title_timer) {
+        lv_timer_reset(s_title_timer);
+    } else {
+        s_title_timer = lv_timer_create(title_timer_cb, 15000, nullptr);
+        lv_timer_set_repeat_count(s_title_timer, 1);
+    }
+}
+
 // ── UI build ───────────────────────────────────────────────────────────────
 
 void create_card_shell(bool offline) {
@@ -393,12 +449,17 @@ void create_card_shell(bool offline) {
     lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(header, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    lv_obj_t *title = create_label(header, &font_inter_semibold_14, COLOR_ACCENT, LV_OPA_COVER, "nextUp");
-    lv_obj_set_style_text_letter_space(title, 1, 0);
+    s_title_label = create_label(header, &font_inter_semibold_14, COLOR_AZURE, LV_OPA_COVER, "nextUp");
+    lv_obj_set_style_text_letter_space(s_title_label, 1, 0);
+    lv_label_set_long_mode(s_title_label, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(s_title_label, 220);
+    lv_obj_add_flag(s_title_label, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_title_label, title_click_cb, LV_EVENT_CLICKED, nullptr);
 
     lv_obj_t *right = lv_obj_create(header);
-    lv_obj_set_style_bg_opa(right, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(right, 0, 0);
+    lv_obj_remove_style_all(right);
+    lv_obj_clear_flag(right, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(right, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_style_pad_all(right, 0, 0);
     lv_obj_set_style_pad_column(right, 12, 0);
     lv_obj_set_layout(right, LV_LAYOUT_FLEX);
@@ -419,19 +480,26 @@ void add_empty_state(lv_obj_t *parent, const char *title, const char *subtitle) 
     lv_obj_set_style_pad_bottom(lbl, 6, 0);
 }
 
-void add_chip(lv_obj_t *parent, const char *text) {
-    lv_obj_t *chip = lv_obj_create(parent);
-    lv_obj_set_style_bg_color(chip, COLOR_ACCENT, 0);
-    lv_obj_set_style_bg_opa(chip, LV_OPA_30, 0);
-    lv_obj_set_style_border_width(chip, 0, 0);
-    lv_obj_set_style_radius(chip, 14, 0);
-    lv_obj_set_style_pad_left(chip, 10, 0);
-    lv_obj_set_style_pad_right(chip, 10, 0);
-    lv_obj_set_style_pad_top(chip, 6, 0);
-    lv_obj_set_style_pad_bottom(chip, 6, 0);
-    lv_obj_t *lbl = create_label(chip, &font_inter_regular_12, COLOR_TEXT_1, LV_OPA_COVER, text);
+void add_all_day_row(lv_obj_t *parent, const AgendaEntry &entry) {
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_layout(row, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_bg_color(row, source_color(entry.source), 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_radius(row, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_pad_left(row, 12, 0);
+    lv_obj_set_style_pad_right(row, 12, 0);
+    lv_obj_set_style_pad_top(row, 4, 0);
+    lv_obj_set_style_pad_bottom(row, 4, 0);
+
+    lv_obj_t *lbl = create_label(row, &font_inter_semibold_14, lv_color_hex(0x000000), LV_OPA_COVER, entry.title);
     lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(lbl, 180);
+    lv_obj_set_width(lbl, 270);
 }
 
 void collapse_expanded_row() {
@@ -596,19 +664,20 @@ lv_obj_t *add_day_section(lv_obj_t *parent, const char *heading,
     bool has_content = false;
 
     lv_obj_t *chip_row = lv_obj_create(section);
+    lv_obj_remove_style_all(chip_row);
     lv_obj_set_size(chip_row, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_clear_flag(chip_row, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_bg_opa(chip_row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(chip_row, 0, 0);
+    lv_obj_clear_flag(chip_row, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_pad_all(chip_row, 0, 0);
-    lv_obj_set_style_pad_gap(chip_row, 8, 0);
+    lv_obj_set_style_pad_column(chip_row, 8, 0);
+    lv_obj_set_style_pad_row(chip_row, 6, 0);
     lv_obj_set_layout(chip_row, LV_LAYOUT_FLEX);
     lv_obj_set_flex_flow(chip_row, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(chip_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
     for (uint8_t i = 0; i < agenda.count; ++i) {
         const AgendaEntry &e = agenda.items[i];
         if (e.is_all_day && event_overlaps_day(e, day_start, day_end)) {
-            add_chip(chip_row, e.title);
+            add_all_day_row(chip_row, e);
             has_content = true;
         }
     }
@@ -662,6 +731,10 @@ static void return_timer_cb(lv_timer_t *) {
 }
 
 void update_live_labels(bool offline) {
+    if (WiFi.status() != WL_CONNECTED && s_title_expanded) {
+        collapse_title();
+    }
+    update_title_label();
     if (s_background_clock) {
         if (s_wifi_connected) {
             char tt[6];
@@ -673,14 +746,22 @@ void update_live_labels(bool offline) {
         }
     }
     if (s_wifi_status_label) {
-        lv_label_set_text(s_wifi_status_label, s_wifi_connected ? "wifi ok" : "wifi down");
-        lv_obj_set_style_text_color(s_wifi_status_label,
-                                    s_wifi_connected ? COLOR_ACCENT : COLOR_ALERT, 0);
+        lv_label_set_text(s_wifi_status_label, "wifi down");
+        lv_obj_set_style_text_color(s_wifi_status_label, COLOR_ALERT, 0);
+        if (s_wifi_connected) {
+            lv_obj_add_flag(s_wifi_status_label, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_clear_flag(s_wifi_status_label, LV_OBJ_FLAG_HIDDEN);
+        }
     }
     if (s_mqtt_status_label) {
-        lv_label_set_text(s_mqtt_status_label, s_mqtt_connected ? "mqtt ok" : "mqtt down");
-        lv_obj_set_style_text_color(s_mqtt_status_label,
-                                    s_mqtt_connected ? COLOR_CYAN : COLOR_TEXT_3, 0);
+        lv_label_set_text(s_mqtt_status_label, "mqtt down");
+        lv_obj_set_style_text_color(s_mqtt_status_label, COLOR_ALERT, 0);
+        if (s_mqtt_connected) {
+            lv_obj_add_flag(s_mqtt_status_label, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_clear_flag(s_mqtt_status_label, LV_OBJ_FLAG_HIDDEN);
+        }
     }
     if (s_offline_label) {
         if (offline) {
@@ -724,9 +805,11 @@ void build_setup_or_connecting(const char *title, const char *line1, const char 
     lv_obj_set_layout(card, LV_LAYOUT_FLEX);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 
-    create_label(card, &font_inter_semibold_14, COLOR_ACCENT, LV_OPA_COVER, title);
+    if (title && title[0]) {
+        create_label(card, &font_inter_semibold_14, COLOR_ACCENT, LV_OPA_COVER, title);
+    }
     create_label(card, &font_inter_regular_14,  COLOR_TEXT_1, LV_OPA_COVER, line1);
-    create_label(card, &font_jetbrainsmono_medium_12, COLOR_TEXT_2, LV_OPA_COVER, line2);
+    create_label(card, &font_inter_regular_14, COLOR_TEXT_1, LV_OPA_COVER, line2);
 
     update_live_labels(false);
 }
@@ -827,7 +910,7 @@ void display_show_connecting(const char *ssid) {
         snprintf(line1, sizeof(line1), "Connecting to %s", ssid);
     else
         snprintf(line1, sizeof(line1), "Connecting to WiFi");
-    build_setup_or_connecting("Connecting", line1, "Calendar data will appear after first refresh");
+    build_setup_or_connecting(nullptr, line1, "Calendar data will appear after first refresh");
     flush_lvgl();
 }
 

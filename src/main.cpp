@@ -61,7 +61,6 @@
 #include <lvgl.h>
 #include <Arduino_GFX_Library.h>
 // #include "lv_demo_widgets.h"
-#include <Ticker.h>
 //#include "demos/lv_demos.h"
 #include <NTPClient.h>
 #include <TimeLib.h>
@@ -111,14 +110,6 @@ static bool          g_wifi_connected = false;
 
 static const unsigned long WIFI_RECONNECT_INTERVAL_MS = 10000UL;
 static unsigned long g_last_wifi_retry = 0;
-
-Ticker ticker;
-
-void tcr1s()
-{
-  Serial.printf("SRAM free size: %d\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-  Serial.printf("PSRAM free size: %d\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-}
 
 static void sync_time() {
     g_tz = tz_lookup(g_cfg.timezone);
@@ -281,9 +272,6 @@ void setup()
 {
   Serial.begin(115200);
 
-  Serial.printf("SRAM free size: %d\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-  Serial.printf("PSRAM free size: %d\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-
   Serial.println("LVGL Widgets Demo");
 
   display_init();
@@ -295,11 +283,6 @@ void setup()
   // lv_demo_benchmark();
 
   Serial.println("Setup done");
-
-  Serial.printf("SRAM free size: %d\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-  Serial.printf("PSRAM free size: %d\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-
-  ticker.attach(1, tcr1s);
   lv_timer_handler(); /* let the GUI do its work */
 }
 
