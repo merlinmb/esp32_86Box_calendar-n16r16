@@ -241,6 +241,7 @@ constexpr int SCREEN_H  = 480;
 constexpr int CARD_INSET = 0;
 constexpr int CARD_RADIUS = 0;
 constexpr int HEADER_H  = 48;
+constexpr int SUBHEADER_H = 34;
 constexpr int BODY_PAD  = 16;
 
 const lv_color_t COLOR_BG          = lv_color_hex(0x000000); //lv_color_hex(0x0b0c11);
@@ -277,10 +278,11 @@ bool s_mqtt_connected = false;
 bool s_title_expanded = false;
 
 lv_obj_t *s_body             = nullptr;
+lv_obj_t *s_sticky_day_bar   = nullptr;
 lv_obj_t *s_sticky_day_label = nullptr;
 
 static constexpr uint8_t CAL_MAX_DAYS = 8;
-struct DayAnchor { lv_coord_t top_y; char label[32]; };
+struct DayAnchor { lv_coord_t top_y; char label[48]; };
 DayAnchor s_day_anchors[CAL_MAX_DAYS];
 uint8_t   s_day_anchor_count = 0;
 
@@ -320,6 +322,7 @@ void cleanup_timers() {
     s_day_anchor_count = 0;
     s_event_row_count  = 0;
     s_body             = nullptr;
+    s_sticky_day_bar   = nullptr;
     s_sticky_day_label = nullptr;
     s_title_expanded   = false;
 }
@@ -335,6 +338,12 @@ void format_day_caption(time_t local_epoch, char *out, size_t out_size) {
     struct tm ti;
     gmtime_r(&local_epoch, &ti);
     snprintf(out, out_size, "%s %d %s", DAYS[ti.tm_wday], ti.tm_mday, MONTHS[ti.tm_mon]);
+}
+
+void format_sticky_day_caption(const char *heading, time_t day_start, char *out, size_t out_size) {
+    char date_cap[24];
+    format_day_caption(day_start, date_cap, sizeof(date_cap));
+    snprintf(out, out_size, "%s   %s", heading, date_cap);
 }
 
 time_t local_midnight(time_t local_epoch) {
@@ -709,6 +718,10 @@ static void body_scroll_begin_cb(lv_event_t *) {
     if (s_return_timer) lv_timer_reset(s_return_timer);
 }
 
+static void body_scroll_cb(lv_event_t *) {
+    update_sticky_day_label();
+}
+
 lv_coord_t compute_return_target_y() {
     if (!s_body) return 0;
     const int32_t now_ts = (int32_t)::now();
@@ -921,8 +934,8 @@ void display_render(const CalEvent &ev, bool offline) {
     create_card_shell(offline);
 
     s_body = lv_obj_create(s_card);
-    lv_obj_set_size(s_body, lv_pct(100), SCREEN_H - CARD_INSET * 2 - HEADER_H - 1);
-    lv_obj_align(s_body, LV_ALIGN_TOP_MID, 0, HEADER_H + 1);
+    lv_obj_set_size(s_body, lv_pct(100), SCREEN_H - CARD_INSET * 2 - HEADER_H - SUBHEADER_H - 1);
+    lv_obj_align(s_body, LV_ALIGN_TOP_MID, 0, HEADER_H + SUBHEADER_H + 1);
     lv_obj_set_style_bg_opa(s_body, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_body, 0, 0);
     lv_obj_set_style_pad_left(s_body, BODY_PAD, 0);
@@ -939,9 +952,24 @@ void display_render(const CalEvent &ev, bool offline) {
     lv_obj_set_style_bg_color(s_body, lv_color_hex(0x2a3040), LV_PART_SCROLLBAR);
     lv_obj_set_style_bg_opa(s_body, LV_OPA_COVER, LV_PART_SCROLLBAR);
     lv_obj_add_event_cb(s_body, body_scroll_begin_cb, LV_EVENT_SCROLL_BEGIN, nullptr);
+    lv_obj_add_event_cb(s_body, body_scroll_cb, LV_EVENT_SCROLL, nullptr);
 
-    s_sticky_day_label = lv_label_create(s_card);
-    lv_obj_add_flag(s_sticky_day_label, LV_OBJ_FLAG_HIDDEN);
+    s_sticky_day_bar = lv_obj_create(s_card);
+    lv_obj_set_size(s_sticky_day_bar, lv_pct(100), SUBHEADER_H);
+    lv_obj_align(s_sticky_day_bar, LV_ALIGN_TOP_MID, 0, HEADER_H);
+    lv_obj_set_style_radius(s_sticky_day_bar, 0, 0);
+    lv_obj_set_style_bg_color(s_sticky_day_bar, COLOR_SURFACE, 0);
+    lv_obj_set_style_bg_opa(s_sticky_day_bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_sticky_day_bar, 0, 0);
+    lv_obj_set_style_pad_left(s_sticky_day_bar, BODY_PAD, 0);
+    lv_obj_set_style_pad_right(s_sticky_day_bar, BODY_PAD, 0);
+    lv_obj_set_style_pad_top(s_sticky_day_bar, 8, 0);
+    lv_obj_set_style_pad_bottom(s_sticky_day_bar, 8, 0);
+    lv_obj_clear_flag(s_sticky_day_bar, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_sticky_day_label = create_label(s_sticky_day_bar, &font_inter_semibold_14, COLOR_TEXT_1, LV_OPA_COVER, "");
+    lv_label_set_long_mode(s_sticky_day_label, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(s_sticky_day_label, lv_pct(100));
 
     const time_t today = local_midnight(::now());
 
@@ -970,7 +998,7 @@ void display_render(const CalEvent &ev, bool offline) {
         if (s_day_anchor_count >= CAL_MAX_DAYS) break;
         DayAnchor &a = s_day_anchors[s_day_anchor_count++];
         a.top_y = lv_obj_get_y(section_refs[i].obj);
-        snprintf(a.label, sizeof(a.label), "%s", section_refs[i].label);
+        format_sticky_day_caption(section_refs[i].label, today + i * 86400, a.label, sizeof(a.label));
     }
 
     update_live_labels(offline);
