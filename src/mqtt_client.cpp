@@ -61,6 +61,12 @@ void mqtt_client_init(AppConfig &cfg) {
 
 void mqtt_client_tick() {
     if (!s_enabled) return;
+    if (WiFi.status() != WL_CONNECTED) {
+        if (s_mqtt.connected()) {
+            s_mqtt.disconnect();
+        }
+        return;
+    }
     if (s_mqtt.connected()) {
         s_mqtt.loop();
         return;
@@ -70,4 +76,8 @@ void mqtt_client_tick() {
         s_last_reconnect_ms = now;
         try_connect();
     }
+}
+
+bool mqtt_client_connected() {
+    return s_enabled && s_mqtt.connected();
 }

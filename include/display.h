@@ -25,6 +25,7 @@ void display_init();
 bool display_ready();
 void display_show_setup();
 void display_show_connecting(const char *ssid = nullptr);
+void display_set_connection_status(bool wifi_connected, bool mqtt_connected);
 void display_render(const CalEvent &ev, bool offline);
 void display_update_clock(bool offline);
 void display_breathe(const CalEvent &ev, bool offline);

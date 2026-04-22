@@ -251,6 +251,8 @@ const lv_color_t COLOR_TEXT_3      = lv_color_hex(0x50546a);
 const lv_color_t COLOR_ACCENT      = lv_color_hex(0x5b8ef0);
 const lv_color_t COLOR_ALERT       = lv_color_hex(0xe26d5a);
 const lv_color_t COLOR_CYAN        = lv_color_hex(0x00e5ff);
+const lv_color_t COLOR_CLOCK       = lv_color_hex(0xffffff);
+constexpr lv_opa_t BACKGROUND_CLOCK_OPA = LV_OPA_COVER;
 
 // hsl(220, 75%, 62%) -> #5b8ef0  hsl(185, 60%, 48%) -> #31a8bb
 lv_color_t source_color(const char *source) {
@@ -262,8 +264,13 @@ enum class ScreenMode { Setup, Connecting, Agenda };
 
 lv_obj_t *s_card             = nullptr;
 lv_obj_t *s_offline_label    = nullptr;
+lv_obj_t *s_wifi_status_label = nullptr;
+lv_obj_t *s_mqtt_status_label = nullptr;
 lv_obj_t *s_background_clock = nullptr;
 ScreenMode s_mode             = ScreenMode::Setup;
+
+bool s_wifi_connected = false;
+bool s_mqtt_connected = false;
 
 lv_obj_t *s_body             = nullptr;
 lv_obj_t *s_sticky_day_label = nullptr;
@@ -398,6 +405,8 @@ void create_card_shell(bool offline) {
     lv_obj_set_flex_flow(right, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(right, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
+    s_wifi_status_label = create_label(right, &font_jetbrainsmono_medium_12, COLOR_TEXT_2, LV_OPA_COVER, "");
+    s_mqtt_status_label = create_label(right, &font_jetbrainsmono_medium_12, COLOR_TEXT_2, LV_OPA_COVER, "");
     s_offline_label = create_label(right, &font_jetbrainsmono_medium_12, COLOR_ALERT, LV_OPA_COVER, offline ? "offline" : "");
     if (!offline) lv_obj_add_flag(s_offline_label, LV_OBJ_FLAG_HIDDEN);
 
@@ -653,9 +662,26 @@ static void return_timer_cb(lv_timer_t *) {
 }
 
 void update_live_labels(bool offline) {
-    char tt[6];
-    format_hhmm(tt, sizeof(tt));
-    set_text(s_background_clock, tt);
+    if (s_background_clock) {
+        if (s_wifi_connected) {
+            char tt[6];
+            format_hhmm(tt, sizeof(tt));
+            set_text(s_background_clock, tt);
+            lv_obj_clear_flag(s_background_clock, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(s_background_clock, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (s_wifi_status_label) {
+        lv_label_set_text(s_wifi_status_label, s_wifi_connected ? "wifi ok" : "wifi down");
+        lv_obj_set_style_text_color(s_wifi_status_label,
+                                    s_wifi_connected ? COLOR_ACCENT : COLOR_ALERT, 0);
+    }
+    if (s_mqtt_status_label) {
+        lv_label_set_text(s_mqtt_status_label, s_mqtt_connected ? "mqtt ok" : "mqtt down");
+        lv_obj_set_style_text_color(s_mqtt_status_label,
+                                    s_mqtt_connected ? COLOR_CYAN : COLOR_TEXT_3, 0);
+    }
     if (s_offline_label) {
         if (offline) {
             lv_obj_clear_flag(s_offline_label, LV_OBJ_FLAG_HIDDEN);
@@ -718,6 +744,12 @@ static void flush_lvgl() {
 
 bool display_ready() {
     return s_display_ready;
+}
+
+void display_set_connection_status(bool wifi_connected, bool mqtt_connected) {
+    s_wifi_connected = wifi_connected;
+    s_mqtt_connected = mqtt_connected;
+    update_live_labels(false);
 }
 
 void display_init() {
@@ -863,13 +895,14 @@ void display_render(const CalEvent &ev, bool offline) {
     s_return_timer = lv_timer_create(return_timer_cb, 45000, nullptr);
     lv_timer_set_repeat_count(s_return_timer, -1);
 
-    // Large clock overlay — top-right corner, above all content.
-    s_background_clock = create_label(s_card, &font_inter_display_bold_108, COLOR_TEXT_1, LV_OPA_COVER, "--:--");
+    // Large clock overlay — bottom-right corner, above all content.
+    s_background_clock = create_label(s_card, &font_inter_display_bold_108, COLOR_CLOCK, BACKGROUND_CLOCK_OPA, "--:--");
     lv_obj_add_flag(s_background_clock, LV_OBJ_FLAG_IGNORE_LAYOUT);
     lv_obj_clear_flag(s_background_clock, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_text_align(s_background_clock, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_set_width(s_background_clock, SCREEN_W - BODY_PAD);
-    lv_obj_set_pos(s_background_clock, 0, HEADER_H);
+    lv_obj_set_width(s_background_clock, SCREEN_W - (BODY_PAD * 2));
+    lv_obj_align(s_background_clock, LV_ALIGN_BOTTOM_RIGHT, -BODY_PAD, -BODY_PAD);
+    lv_obj_move_foreground(s_background_clock);
     update_live_labels(offline);
 
     flush_lvgl();

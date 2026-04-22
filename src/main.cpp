@@ -107,6 +107,10 @@ static unsigned long g_last_clock   = 0;
 static unsigned long g_last_breathe = 0;
 static unsigned long g_last_fetch   = 0;
 static bool          g_first_fetch  = true;
+static bool          g_wifi_connected = false;
+
+static const unsigned long WIFI_RECONNECT_INTERVAL_MS = 10000UL;
+static unsigned long g_last_wifi_retry = 0;
 
 Ticker ticker;
 
@@ -131,6 +135,40 @@ static void sync_time() {
     Serial.printf("[ntp] UTC=%ld  local=%ld  tz=%s\n",
                   (long)utc, (long)local, g_cfg.timezone);
 }
+
+  static void on_wifi_connected(const char *reason) {
+    g_wifi_connected = true;
+    Serial.printf("[wifi] %s. IP: %s\n", reason, WiFi.localIP().toString().c_str());
+    g_ntp.begin();
+    sync_time();
+    display_set_connection_status(true, mqtt_client_connected());
+  }
+
+  static void maintain_wifi() {
+    if (g_ap_mode || g_cfg.wifi_ssid[0] == '\0') return;
+
+    if (WiFi.status() == WL_CONNECTED) {
+      if (!g_wifi_connected) {
+        on_wifi_connected("Reconnected");
+      }
+      return;
+    }
+
+    if (g_wifi_connected) {
+      g_wifi_connected = false;
+      Serial.println("[wifi] Connection lost");
+      display_set_connection_status(false, false);
+    }
+
+    unsigned long now = millis();
+    if (now - g_last_wifi_retry < WIFI_RECONNECT_INTERVAL_MS) return;
+
+    g_last_wifi_retry = now;
+    Serial.printf("[wifi] Reconnecting to '%s'\n", g_cfg.wifi_ssid);
+    WiFi.disconnect();
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(g_cfg.wifi_ssid, g_cfg.wifi_password);
+  }
 
 void loadConfig(){
     config_load(g_cfg);
@@ -163,14 +201,13 @@ void setupWifi()
 
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println("[boot] WiFi failed — falling back to AP setup mode");
+      g_wifi_connected = false;
         ws_start_ap(g_cfg);
         //display_show_setup();
         return;
     }
 
-    Serial.printf("[boot] WiFi connected. IP: %s\n", WiFi.localIP().toString().c_str());
-    g_ntp.begin();
-    sync_time();
+    on_wifi_connected("Connected");
     ws_start_sta(g_cfg);
     mqtt_client_init(g_cfg);
 }
@@ -275,10 +312,12 @@ void loop()
 
     unsigned long now = millis();
 
+    maintain_wifi();
     mqtt_client_tick();
+    display_set_connection_status(g_wifi_connected, mqtt_client_connected());
 
     static unsigned long s_last_ntp = 0;
-    if (now - s_last_ntp >= 60000UL) {
+    if (g_wifi_connected && now - s_last_ntp >= 60000UL) {
         s_last_ntp = now;
         if (g_ntp.update()) {
             time_t utc   = (time_t)g_ntp.getEpochTime();
