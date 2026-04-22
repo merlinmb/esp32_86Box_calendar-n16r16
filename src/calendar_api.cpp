@@ -95,9 +95,12 @@ bool calendar_fetch(const AppConfig &cfg, CalEvent &ev, Timezone *tz) {
 
     HTTPClient http;
     http.setTimeout(10000);
+    http.setReuse(false);
+    http.useHTTP10(true);
 
     if (!http.begin(client, cfg.server_url)) {
         Serial.println("[cal] http.begin() failed — bad URL?");
+        client.stop();
         return false;
     }
 
@@ -112,21 +115,19 @@ bool calendar_fetch(const AppConfig &cfg, CalEvent &ev, Timezone *tz) {
     if (code != 200) {
         if (code > 0) {
             String errBody = http.getString();
-            Serial.printf("[cal] Response body: %s\n", errBody.c_str());
+            Serial.printf("[cal] Response body: %.200s\n", errBody.c_str());
         } else {
             Serial.printf("[cal] HTTP error: %s\n", http.errorToString(code).c_str());
         }
         http.end();
+        client.stop();
         return false;
     }
 
-    String body = http.getString();
-    http.end();
-    Serial.printf("[cal] Body length: %d bytes\n", body.length());
-    Serial.printf("[cal] Body preview: %.200s\n", body.c_str());
-
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, body);
+    DeserializationError err = deserializeJson(doc, http.getStream());
+    http.end();
+    client.stop();
     if (err) {
         Serial.printf("[cal] JSON parse error: %s\n", err.c_str());
         return false;

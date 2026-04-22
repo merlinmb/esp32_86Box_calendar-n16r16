@@ -4,6 +4,7 @@
 #include <PubSubClient.h>
 #include <WiFi.h>
 #include <Arduino.h>
+#include <esp_system.h>
 
 static WiFiClient    s_wifi_client;
 static PubSubClient  s_mqtt(s_wifi_client);
@@ -12,6 +13,13 @@ static bool          s_enabled = false;
 
 static const uint32_t RECONNECT_INTERVAL_MS = 5000;
 static uint32_t s_last_reconnect_ms = 0;
+
+static void reset_transport() {
+    if (s_mqtt.connected()) {
+        s_mqtt.disconnect();
+    }
+    s_wifi_client.stop();
+}
 
 // ── Message handler ───────────────────────────────────────────────────────────
 
@@ -34,13 +42,25 @@ static void on_message(char *topic, byte *payload, unsigned int len) {
 // ── Connection helper ─────────────────────────────────────────────────────────
 
 static bool try_connect() {
+    reset_transport();
+
+    uint64_t chip_id = ESP.getEfuseMac();
+    char client_id[32];
+    snprintf(client_id, sizeof(client_id), "esp32_calendar_%08lx", (unsigned long)(chip_id & 0xffffffffULL));
+
     Serial.printf("[mqtt] Connecting to %s:%u ...\n",
                   s_cfg->mqtt_host, s_cfg->mqtt_port);
-    if (!s_mqtt.connect("esp32_calendar")) {
+    if (!s_mqtt.connect(client_id)) {
         Serial.printf("[mqtt] Failed, state=%d\n", s_mqtt.state());
         return false;
     }
-    s_mqtt.subscribe(s_cfg->mqtt_topic);
+
+    if (s_cfg->mqtt_topic[0] != '\0' && !s_mqtt.subscribe(s_cfg->mqtt_topic)) {
+        Serial.printf("[mqtt] Subscribe failed for '%s'\n", s_cfg->mqtt_topic);
+        reset_transport();
+        return false;
+    }
+
     Serial.printf("[mqtt] Connected. Subscribed to '%s'\n", s_cfg->mqtt_topic);
     return true;
 }
@@ -49,22 +69,33 @@ static bool try_connect() {
 
 void mqtt_client_init(AppConfig &cfg) {
     s_cfg = &cfg;
-    if (cfg.mqtt_host[0] == '\0') {
+    reset_transport();
+    s_last_reconnect_ms = 0;
+
+    if (cfg.mqtt_host[0] == '\0' || cfg.mqtt_topic[0] == '\0') {
+        s_enabled = false;
         Serial.println("[mqtt] No broker configured — disabled");
         return;
     }
+
     s_enabled = true;
     s_mqtt.setServer(cfg.mqtt_host, cfg.mqtt_port);
     s_mqtt.setCallback(on_message);
+    s_mqtt.setKeepAlive(30);
+    s_mqtt.setSocketTimeout(10);
     try_connect();
+}
+
+void mqtt_client_on_wifi_disconnected() {
+    if (!s_enabled) return;
+    reset_transport();
+    s_last_reconnect_ms = millis();
 }
 
 void mqtt_client_tick() {
     if (!s_enabled) return;
     if (WiFi.status() != WL_CONNECTED) {
-        if (s_mqtt.connected()) {
-            s_mqtt.disconnect();
-        }
+        mqtt_client_on_wifi_disconnected();
         return;
     }
     if (s_mqtt.connected()) {

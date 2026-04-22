@@ -111,6 +111,13 @@ static bool          g_wifi_connected = false;
 static const unsigned long WIFI_RECONNECT_INTERVAL_MS = 10000UL;
 static unsigned long g_last_wifi_retry = 0;
 
+static void begin_wifi_station() {
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(false);
+  WiFi.begin(g_cfg.wifi_ssid, g_cfg.wifi_password);
+}
+
 static void sync_time() {
     g_tz = tz_lookup(g_cfg.timezone);
 
@@ -148,6 +155,7 @@ static void sync_time() {
     if (g_wifi_connected) {
       g_wifi_connected = false;
       Serial.println("[wifi] Connection lost");
+      mqtt_client_on_wifi_disconnected();
       display_set_connection_status(false, false);
     }
 
@@ -156,9 +164,8 @@ static void sync_time() {
 
     g_last_wifi_retry = now;
     Serial.printf("[wifi] Reconnecting to '%s'\n", g_cfg.wifi_ssid);
-    WiFi.disconnect();
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(g_cfg.wifi_ssid, g_cfg.wifi_password);
+    WiFi.disconnect(true, false);
+    begin_wifi_station();
   }
 
 void loadConfig(){
@@ -178,8 +185,7 @@ void setupWifi()
 {
     display_show_connecting(g_cfg.wifi_ssid);
 
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(g_cfg.wifi_ssid, g_cfg.wifi_password);
+  begin_wifi_station();
     Serial.print("[boot] Connecting to configured WiFi");
 
     unsigned long start = millis();
