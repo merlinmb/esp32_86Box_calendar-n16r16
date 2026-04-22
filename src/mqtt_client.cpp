@@ -1,6 +1,7 @@
 #include "mqtt_client.h"
 #include "display.h"
 #include "config.h"
+#include "secrets.h"
 #include <PubSubClient.h>
 #include <WiFi.h>
 #include <Arduino.h>
@@ -19,6 +20,27 @@ static void reset_transport() {
         s_mqtt.disconnect();
     }
     s_wifi_client.stop();
+}
+
+// ── MQTT publish helpers ──────────────────────────────────────────────────────
+
+static void mqttPublishStat(String topic, String payload) {
+    if (!s_mqtt.connected()) return;
+    String full_topic = String(DEFAULT_DEVICE_NAME) + "/stat/" + topic;
+    s_mqtt.publish(full_topic.c_str(), payload.c_str());
+}
+
+static String IpAddress2String(IPAddress ip) {
+    return String(ip[0]) + "." + String(ip[1]) + "." + String(ip[2]) + "." + String(ip[3]);
+}
+
+void mqttTransmitInitStat(String deviceName) {
+    mqttPublishStat("init", "{\"value1\":\"" + IpAddress2String(WiFi.localIP()) +
+                    "\",\"value2\":\"" + WiFi.macAddress() + "\",\"value3\":\"" + deviceName + "\"}");
+}
+
+void mqttTransmitInitStat() {
+    mqttTransmitInitStat(DEFAULT_DEVICE_NAME);
 }
 
 // ── Message handler ───────────────────────────────────────────────────────────
@@ -62,6 +84,7 @@ static bool try_connect() {
     }
 
     Serial.printf("[mqtt] Connected. Subscribed to '%s'\n", s_cfg->mqtt_topic);
+    mqttTransmitInitStat();
     return true;
 }
 

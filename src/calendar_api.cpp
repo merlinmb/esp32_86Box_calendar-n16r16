@@ -86,113 +86,139 @@ bool calendar_fetch(const AppConfig &cfg, CalEvent &ev, Timezone *tz) {
     Serial.printf("[cal] Fetching URL: '%s'\n", cfg.server_url);
     Serial.printf("[cal] Read token configured: %s\n", cfg.read_token[0] != '\0' ? "yes" : "no");
 
-    WiFiClientSecure client;
-    client.setInsecure();  // Home LAN device — skip CA verification
-    // Force HTTP/1.1 — ESP32 WiFiClientSecure doesn't support HTTP/2 (h2).
-    // Without this, nginx servers with h2 enabled reject the ALPN negotiation.
-    static const char *alpn_protos[] = {"http/1.1", nullptr};
-    client.setAlpnProtocols(alpn_protos);
+    const int MAX_RETRIES = 3;
+    const int RETRY_DELAY_MS = 500;
 
-    HTTPClient http;
-    http.setTimeout(10000);
-    http.setReuse(false);
-    http.useHTTP10(true);
-
-    if (!http.begin(client, cfg.server_url)) {
-        Serial.println("[cal] http.begin() failed — bad URL?");
-        client.stop();
-        return false;
-    }
-
-    if (cfg.read_token[0] != '\0') {
-        char bearer[140];
-        snprintf(bearer, sizeof(bearer), "Bearer %s", cfg.read_token);
-        http.addHeader("Authorization", bearer);
-    }
-
-    int code = http.GET();
-    Serial.printf("[cal] HTTP response code: %d\n", code);
-    if (code != 200) {
-        if (code > 0) {
-            String errBody = http.getString();
-            Serial.printf("[cal] Response body: %.200s\n", errBody.c_str());
-        } else {
-            Serial.printf("[cal] HTTP error: %s\n", http.errorToString(code).c_str());
+    for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        if (attempt > 1) {
+            Serial.printf("[cal] Retry attempt %d/%d after %dms delay\n", attempt, MAX_RETRIES, RETRY_DELAY_MS);
+            delay(RETRY_DELAY_MS);
         }
+
+        WiFiClientSecure client;
+        client.setInsecure();  // Home LAN device — skip CA verification
+        // Force HTTP/1.1 — ESP32 WiFiClientSecure doesn't support HTTP/2 (h2).
+        // Without this, nginx servers with h2 enabled reject the ALPN negotiation.
+        static const char *alpn_protos[] = {"http/1.1", nullptr};
+        client.setAlpnProtocols(alpn_protos);
+
+        HTTPClient http;
+        http.setTimeout(10000);
+        http.setReuse(false);
+        http.useHTTP10(true);
+
+        if (!http.begin(client, cfg.server_url)) {
+            Serial.printf("[cal] http.begin() failed on attempt %d — bad URL?\n", attempt);
+            http.end();
+            client.stop();
+            continue;  // Retry on http.begin() failure
+        }
+
+        if (cfg.read_token[0] != '\0') {
+            char bearer[140];
+            snprintf(bearer, sizeof(bearer), "Bearer %s", cfg.read_token);
+            http.addHeader("Authorization", bearer);
+        }
+
+        int code = http.GET();
+        Serial.printf("[cal] HTTP response code: %d (attempt %d/%d)\n", code, attempt, MAX_RETRIES);
+
+        if (code != 200) {
+            if (code > 0) {
+                String errBody = http.getString();
+                Serial.printf("[cal] Response body: %.200s\n", errBody.c_str());
+                http.end();
+                client.stop();
+                return false;  // HTTP error (not timeout) — don't retry
+            } else {
+                Serial.printf("[cal] HTTP error: %s\n", http.errorToString(code).c_str());
+                http.end();
+                client.stop();
+                // Retry on transient errors: connection refused (-1), connection lost (-5), timeout (-11)
+                bool is_transient = (code == -1 || code == -5 || code == -11);
+                if (attempt < MAX_RETRIES && is_transient) {
+                    continue;  // Retry on transient network errors
+                }
+                return false;  // Failed after retries
+            }
+        }
+
+        // Success — parse JSON
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, http.getStream());
         http.end();
         client.stop();
-        return false;
+        if (err) {
+            Serial.printf("[cal] JSON parse error: %s\n", err.c_str());
+            if (attempt < MAX_RETRIES) {
+                continue;  // Retry on JSON parse error
+            }
+            return false;
+        }
+
+        // Successfully fetched and parsed — process events
+        JsonArray events = doc["events"].as<JsonArray>();
+        Serial.printf("[cal] events array: %s, size=%d\n",
+                      events.isNull() ? "null" : "ok",
+                      events.isNull() ? 0 : (int)events.size());
+        if (events.isNull() || events.size() == 0) {
+            ev.has_event = false;
+            return true;  // Successful fetch, just no events
+        }
+
+        const time_t window_start = local_day_start(::now());
+        const time_t window_end = window_start + (7 * 86400);
+
+        for (JsonObject entry_json : events) {
+            if (ev.count >= CAL_MAX_EVENTS) {
+                break;
+            }
+
+            const char *title = entry_json["title"] | "";
+            const char *start_str = entry_json["start"] | "";
+            const char *end_str = entry_json["end"] | "";
+            const bool is_all_day = entry_json["isAllDay"] | false;
+
+            const int32_t utc_start = parse_iso8601_utc(start_str);
+            int32_t utc_end = parse_iso8601_utc(end_str);
+            if (!title[0] || utc_start <= 0) {
+                continue;
+            }
+
+            const int32_t start_local = tz ? (int32_t)tz->toLocal((time_t)utc_start) : utc_start;
+            int32_t end_local = utc_end > 0 ? (tz ? (int32_t)tz->toLocal((time_t)utc_end) : utc_end) : 0;
+            if (end_local <= start_local) {
+                end_local = is_all_day ? start_local + 86400 : start_local;
+            }
+
+            if (!overlaps_day_window(start_local, end_local, window_start, window_end)) {
+                continue;
+            }
+
+            AgendaEntry &item = ev.items[ev.count++];
+            copy_string(item.title, sizeof(item.title), title);
+            copy_string(item.location, sizeof(item.location), entry_json["location"] | "");
+            copy_string(item.calendar_name, sizeof(item.calendar_name), entry_json["calendar"] | "");
+            copy_string(item.source, sizeof(item.source), entry_json["source"] | "");
+            item.ts_start_local = start_local;
+            item.ts_end_local = end_local;
+            item.is_all_day = is_all_day;
+
+            if (item.is_all_day) {
+                item.time_start[0] = '\0';
+                item.time_end[0] = '\0';
+            } else {
+                epoch_to_hhmm(item.ts_start_local, item.time_start);
+                epoch_to_hhmm(item.ts_end_local, item.time_end);
+            }
+
+            Serial.printf("[cal] Agenda item %d: title='%s' start='%s' end='%s' allDay=%d\n",
+                          ev.count, item.title, start_str, end_str, item.is_all_day);
+        }
+
+        ev.has_event = ev.count > 0;
+        return true;  // Successfully completed
     }
 
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, http.getStream());
-    http.end();
-    client.stop();
-    if (err) {
-        Serial.printf("[cal] JSON parse error: %s\n", err.c_str());
-        return false;
-    }
-
-    JsonArray events = doc["events"].as<JsonArray>();
-    Serial.printf("[cal] events array: %s, size=%d\n",
-                  events.isNull() ? "null" : "ok",
-                  events.isNull() ? 0 : (int)events.size());
-    if (events.isNull() || events.size() == 0) {
-        ev.has_event = false;
-        return true;  // Successful fetch, just no events
-    }
-
-    const time_t window_start = local_day_start(::now());
-    const time_t window_end = window_start + (7 * 86400);
-
-    for (JsonObject entry_json : events) {
-        if (ev.count >= CAL_MAX_EVENTS) {
-            break;
-        }
-
-        const char *title = entry_json["title"] | "";
-        const char *start_str = entry_json["start"] | "";
-        const char *end_str = entry_json["end"] | "";
-        const bool is_all_day = entry_json["isAllDay"] | false;
-
-        const int32_t utc_start = parse_iso8601_utc(start_str);
-        int32_t utc_end = parse_iso8601_utc(end_str);
-        if (!title[0] || utc_start <= 0) {
-            continue;
-        }
-
-        const int32_t start_local = tz ? (int32_t)tz->toLocal((time_t)utc_start) : utc_start;
-        int32_t end_local = utc_end > 0 ? (tz ? (int32_t)tz->toLocal((time_t)utc_end) : utc_end) : 0;
-        if (end_local <= start_local) {
-            end_local = is_all_day ? start_local + 86400 : start_local;
-        }
-
-        if (!overlaps_day_window(start_local, end_local, window_start, window_end)) {
-            continue;
-        }
-
-        AgendaEntry &item = ev.items[ev.count++];
-        copy_string(item.title, sizeof(item.title), title);
-        copy_string(item.location, sizeof(item.location), entry_json["location"] | "");
-        copy_string(item.calendar_name, sizeof(item.calendar_name), entry_json["calendar"] | "");
-        copy_string(item.source, sizeof(item.source), entry_json["source"] | "");
-        item.ts_start_local = start_local;
-        item.ts_end_local = end_local;
-        item.is_all_day = is_all_day;
-
-        if (item.is_all_day) {
-            item.time_start[0] = '\0';
-            item.time_end[0] = '\0';
-        } else {
-            epoch_to_hhmm(item.ts_start_local, item.time_start);
-            epoch_to_hhmm(item.ts_end_local, item.time_end);
-        }
-
-        Serial.printf("[cal] Agenda item %d: title='%s' start='%s' end='%s' allDay=%d\n",
-                      ev.count, item.title, start_str, end_str, item.is_all_day);
-    }
-
-    ev.has_event = ev.count > 0;
-
-    return true;
+    return false;  // All retries exhausted
 }

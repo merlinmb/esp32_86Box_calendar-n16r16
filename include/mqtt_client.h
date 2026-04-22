@@ -15,3 +15,9 @@ void mqtt_client_on_wifi_disconnected();
 
 // Returns true when the MQTT broker session is currently established.
 bool mqtt_client_connected();
+
+// Transmit initial status (IP, MAC, device name) on MQTT reconnect with custom device name.
+void mqttTransmitInitStat(String deviceName);
+
+// Transmit initial status using default device name from secrets.
+void mqttTransmitInitStat();
