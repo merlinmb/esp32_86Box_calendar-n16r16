@@ -80,6 +80,19 @@ static bool overlaps_day_window(int32_t start_local, int32_t end_local,
     return normalized_end > window_start && start_local < window_end;
 }
 
+static CalEvent s_last_successful_read;
+static bool s_has_last_successful_read = false;
+
+static bool restore_previous_read(CalEvent &ev, const char *reason) {
+    if (!s_has_last_successful_read) {
+        return false;
+    }
+
+    ev = s_last_successful_read;
+    Serial.printf("[cal] %s; using previous read (%u events)\n", reason, ev.count);
+    return true;
+}
+
 bool calendar_fetch(const AppConfig &cfg, CalEvent &ev, Timezone *tz) {
     memset(&ev, 0, sizeof(ev));
 
@@ -146,13 +159,37 @@ bool calendar_fetch(const AppConfig &cfg, CalEvent &ev, Timezone *tz) {
                 if (attempt < MAX_RETRIES && is_transient) {
                     continue;  // Retry on transient network errors
                 }
+                if (code == -11 && restore_previous_read(ev, "Read timeout")) {
+                    return true;
+                }
                 return false;  // Failed after retries
             }
         }
 
         // Success — parse JSON
         JsonDocument doc;
-        DeserializationError err = deserializeJson(doc, http.getStream());
+        auto *stream = http.getStreamPtr();
+        unsigned long read_wait_started = millis();
+        while (stream && stream->available() == 0 && stream->connected() && millis() - read_wait_started < 1000UL) {
+            delay(10);
+        }
+
+        if (!stream || stream->available() == 0) {
+            http.end();
+            client.flush();
+            client.stop();
+            delay(10);  // Allow TCP stack to clean up socket
+            if (attempt < MAX_RETRIES) {
+                Serial.printf("[cal] No response body available on attempt %d/%d\n", attempt, MAX_RETRIES);
+                continue;
+            }
+            if (restore_previous_read(ev, "No response body available")) {
+                return true;
+            }
+            return false;
+        }
+
+        DeserializationError err = deserializeJson(doc, *stream);
         http.end();
         client.flush();
         client.stop();
@@ -226,6 +263,8 @@ bool calendar_fetch(const AppConfig &cfg, CalEvent &ev, Timezone *tz) {
         }
 
         ev.has_event = ev.count > 0;
+        s_last_successful_read = ev;
+        s_has_last_successful_read = true;
         return true;  // Successfully completed
     }
 
