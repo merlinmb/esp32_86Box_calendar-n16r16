@@ -89,28 +89,31 @@ bool calendar_fetch(const AppConfig &cfg, CalEvent &ev, Timezone *tz) {
     const int MAX_RETRIES = 3;
     const int RETRY_DELAY_MS = 500;
 
+    // Create client objects once outside retry loop to avoid heap fragmentation
+    WiFiClientSecure client;
+    client.setInsecure();  // Home LAN device — skip CA verification
+    // Force HTTP/1.1 — ESP32 WiFiClientSecure doesn't support HTTP/2 (h2).
+    // Without this, nginx servers with h2 enabled reject the ALPN negotiation.
+    static const char *alpn_protos[] = {"http/1.1", nullptr};
+    client.setAlpnProtocols(alpn_protos);
+
+    HTTPClient http;
+    http.setTimeout(10000);
+    http.setReuse(false);
+    http.useHTTP10(true);
+
     for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         if (attempt > 1) {
             Serial.printf("[cal] Retry attempt %d/%d after %dms delay\n", attempt, MAX_RETRIES, RETRY_DELAY_MS);
             delay(RETRY_DELAY_MS);
         }
 
-        WiFiClientSecure client;
-        client.setInsecure();  // Home LAN device — skip CA verification
-        // Force HTTP/1.1 — ESP32 WiFiClientSecure doesn't support HTTP/2 (h2).
-        // Without this, nginx servers with h2 enabled reject the ALPN negotiation.
-        static const char *alpn_protos[] = {"http/1.1", nullptr};
-        client.setAlpnProtocols(alpn_protos);
-
-        HTTPClient http;
-        http.setTimeout(10000);
-        http.setReuse(false);
-        http.useHTTP10(true);
-
         if (!http.begin(client, cfg.server_url)) {
             Serial.printf("[cal] http.begin() failed on attempt %d — bad URL?\n", attempt);
             http.end();
+            client.flush();
             client.stop();
+            delay(10);  // Allow TCP stack to clean up socket
             continue;  // Retry on http.begin() failure
         }
 
@@ -128,12 +131,16 @@ bool calendar_fetch(const AppConfig &cfg, CalEvent &ev, Timezone *tz) {
                 String errBody = http.getString();
                 Serial.printf("[cal] Response body: %.200s\n", errBody.c_str());
                 http.end();
+                client.flush();
                 client.stop();
+                delay(10);  // Allow TCP stack to clean up socket
                 return false;  // HTTP error (not timeout) — don't retry
             } else {
                 Serial.printf("[cal] HTTP error: %s\n", http.errorToString(code).c_str());
                 http.end();
+                client.flush();
                 client.stop();
+                delay(10);  // Allow TCP stack to clean up socket
                 // Retry on transient errors: connection refused (-1), connection lost (-5), timeout (-11)
                 bool is_transient = (code == -1 || code == -5 || code == -11);
                 if (attempt < MAX_RETRIES && is_transient) {
@@ -147,7 +154,9 @@ bool calendar_fetch(const AppConfig &cfg, CalEvent &ev, Timezone *tz) {
         JsonDocument doc;
         DeserializationError err = deserializeJson(doc, http.getStream());
         http.end();
+        client.flush();
         client.stop();
+        delay(10);  // Allow TCP stack to clean up socket
         if (err) {
             Serial.printf("[cal] JSON parse error: %s\n", err.c_str());
             if (attempt < MAX_RETRIES) {

@@ -1,5 +1,6 @@
 #pragma once
 #include "config.h"
+#include "Arduino.h"
 
 // Initialise the MQTT client. If mqtt_host is empty the client is disabled.
 // Must be called after WiFi is connected.

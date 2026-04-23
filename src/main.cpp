@@ -110,6 +110,9 @@ static bool          g_wifi_connected = false;
 
 static const unsigned long WIFI_RECONNECT_INTERVAL_MS = 10000UL;
 static unsigned long g_last_wifi_retry = 0;
+static int g_wifi_retry_count = 0;
+static const int WIFI_MAX_RETRIES = 10;
+static const unsigned long WIFI_RETRY_BACKOFF_MS = 2000UL;
 
 static void begin_wifi_station() {
   WiFi.mode(WIFI_STA);
@@ -146,27 +149,43 @@ static void sync_time() {
     if (g_ap_mode || g_cfg.wifi_ssid[0] == '\0') return;
 
     if (WiFi.status() == WL_CONNECTED) {
-      if (!g_wifi_connected) {
-        on_wifi_connected("Reconnected");
-      }
-      return;
+        if (!g_wifi_connected) {
+            g_wifi_retry_count = 0;  // Reset counter on successful reconnection
+            on_wifi_connected("Reconnected");
+        }
+        return;
     }
 
     if (g_wifi_connected) {
-      g_wifi_connected = false;
-      Serial.println("[wifi] Connection lost");
-      mqtt_client_on_wifi_disconnected();
-      display_set_connection_status(false, false);
+        g_wifi_connected = false;
+        g_wifi_retry_count = 0;
+        Serial.printf("[wifi] Connection lost. WiFi status: %d\n", WiFi.status());
+        mqtt_client_on_wifi_disconnected();
+        display_set_connection_status(false, false);
     }
 
     unsigned long now = millis();
-    if (now - g_last_wifi_retry < WIFI_RECONNECT_INTERVAL_MS) return;
+    unsigned long retry_interval;
+
+    // Adaptive retry interval: faster retries initially, slower after multiple failures
+    if (g_wifi_retry_count < 3) {
+        retry_interval = 3000UL;  // First 3 attempts: retry every 3 seconds
+    } else if (g_wifi_retry_count < 10) {
+        retry_interval = 5000UL;  // Next 7 attempts: retry every 5 seconds
+    } else {
+        retry_interval = 15000UL; // After 10 failures: retry every 15 seconds
+    }
+
+    if (now - g_last_wifi_retry < retry_interval) return;
 
     g_last_wifi_retry = now;
-    Serial.printf("[wifi] Reconnecting to '%s'\n", g_cfg.wifi_ssid);
+    g_wifi_retry_count++;
+
+    Serial.printf("[wifi] Reconnection attempt %d. Connecting to '%s'\n", g_wifi_retry_count, g_cfg.wifi_ssid);
     WiFi.disconnect(true, false);
+    delay(100);
     begin_wifi_station();
-  }
+}
 
 void loadConfig(){
     config_load(g_cfg);
@@ -185,28 +204,39 @@ void setupWifi()
 {
     display_show_connecting(g_cfg.wifi_ssid);
 
-  begin_wifi_station();
-    Serial.print("[boot] Connecting to configured WiFi");
+    // Robust WiFi connection with retries and exponential backoff
+    for (int attempt = 1; attempt <= WIFI_MAX_RETRIES; attempt++) {
+        Serial.printf("[boot] WiFi connection attempt %d/%d\n", attempt, WIFI_MAX_RETRIES);
+        begin_wifi_station();
 
-    unsigned long start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
-        delay(250);
-        lv_timer_handler();
-        Serial.print(".");
+        unsigned long start = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
+            delay(250);
+            lv_timer_handler();
+            Serial.print(".");
+        }
+        Serial.println();
+
+        if (WiFi.status() == WL_CONNECTED) {
+            g_wifi_retry_count = 0;  // Reset retry counter on success
+            on_wifi_connected("Connected");
+            ws_start_sta(g_cfg);
+            mqtt_client_init(g_cfg);
+            return;
+        }
+
+        if (attempt < WIFI_MAX_RETRIES) {
+            unsigned long backoff = WIFI_RETRY_BACKOFF_MS * attempt;  // Exponential backoff
+            Serial.printf("[boot] Connection attempt %d failed. Retrying in %lums...\n", attempt, backoff);
+            WiFi.disconnect(true, false);
+            delay(backoff);
+        }
     }
-    Serial.println();
 
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("[boot] WiFi failed — falling back to AP setup mode");
-      g_wifi_connected = false;
-        ws_start_ap(g_cfg);
-        //display_show_setup();
-        return;
-    }
-
-    on_wifi_connected("Connected");
-    ws_start_sta(g_cfg);
-    mqtt_client_init(g_cfg);
+    // All retries exhausted
+    Serial.println("[boot] WiFi failed after all retry attempts — falling back to AP setup mode");
+    g_wifi_connected = false;
+    ws_start_ap(g_cfg);
 }
 
 // Rollback: swap display_init() in setup() for setup_display_inline() and restore the
@@ -315,7 +345,10 @@ void loop()
         }
     }
 
-    if (g_first_fetch || (now - g_last_fetch >= (unsigned long)g_cfg.refresh_secs * 1000UL)) {
+    // Update offline state based on WiFi connection (not fetch failure)
+    g_offline = !g_wifi_connected;
+
+    if ((g_first_fetch || (now - g_last_fetch >= (unsigned long)g_cfg.refresh_secs * 1000UL)) && g_wifi_connected) {
         g_last_fetch  = now;
         g_first_fetch = false;
 
@@ -325,15 +358,19 @@ void loop()
 
         if (ok) {
             g_event   = tmp;
-            g_offline = false;
             const char *first_title = (g_event.has_event && g_event.count > 0) ? g_event.items[0].title : "";
             Serial.printf("[loop] Fetch OK. has_event=%d title='%s'\n",
                           g_event.has_event, first_title);
         } else {
-            g_offline = true;
-            Serial.println("[loop] Fetch failed — showing offline indicator");
+            Serial.println("[loop] Fetch failed — keeping previous event");
         }
 
+        display_render(g_event, g_offline);
+        g_last_clock   = now;
+        g_last_breathe = now;
+    } else if (g_first_fetch) {
+        // First boot: render once with current offline state
+        g_first_fetch = false;
         display_render(g_event, g_offline);
         g_last_clock   = now;
         g_last_breathe = now;
