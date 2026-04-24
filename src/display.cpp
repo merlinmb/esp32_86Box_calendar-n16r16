@@ -242,7 +242,6 @@ constexpr int CARD_INSET = 0;
 constexpr int CARD_RADIUS = 0;
 constexpr int HEADER_H  = 48;
 constexpr int SUBHEADER_H = 34;
-constexpr int STICKY_DAY_SWITCH_OFFSET = 15;
 constexpr int BODY_PAD  = 16;
 
 const lv_color_t COLOR_BG          = lv_color_hex(0x000000); //lv_color_hex(0x0b0c11);
@@ -288,6 +287,7 @@ struct DayAnchor {
     lv_coord_t top_y;
     lv_coord_t switch_y;
     char label[48];
+    lv_obj_t *day_hdr;
 };
 DayAnchor s_day_anchors[CAL_MAX_DAYS];
 uint8_t   s_day_anchor_count = 0;
@@ -714,11 +714,18 @@ lv_obj_t *add_day_section(lv_obj_t *parent, const char *heading,
 void update_sticky_day_label() {
     if (!s_sticky_day_label || !s_body || s_day_anchor_count == 0) return;
     const lv_coord_t scroll_y = lv_obj_get_scroll_y(s_body);
-    const char *cur = s_day_anchors[0].label;
+    int8_t active = 0;
     for (uint8_t i = 0; i < s_day_anchor_count; ++i) {
-        if (s_day_anchors[i].switch_y <= scroll_y) cur = s_day_anchors[i].label;
+        if (s_day_anchors[i].switch_y <= scroll_y) active = i;
     }
-    lv_label_set_text(s_sticky_day_label, cur);
+    lv_label_set_text(s_sticky_day_label, s_day_anchors[active].label);
+    for (uint8_t i = 0; i < s_day_anchor_count; ++i) {
+        if (!s_day_anchors[i].day_hdr) continue;
+        if (i == (uint8_t)active)
+            lv_obj_add_flag(s_day_anchors[i].day_hdr, LV_OBJ_FLAG_HIDDEN);
+        else
+            lv_obj_clear_flag(s_day_anchors[i].day_hdr, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 static void body_scroll_begin_cb(lv_event_t *) {
@@ -1012,11 +1019,8 @@ void display_render(const CalEvent &ev, bool offline) {
         DayAnchor &a = s_day_anchors[s_day_anchor_count++];
         a.top_y = lv_obj_get_y(section_refs[i].obj);
         a.switch_y = a.top_y;
-        if (section_refs[i].header) {
-            a.switch_y += lv_obj_get_y(section_refs[i].header) + lv_obj_get_height(section_refs[i].header);
-        }
-        a.switch_y += STICKY_DAY_SWITCH_OFFSET;
         format_sticky_day_caption(section_refs[i].label, today + i * 86400, a.label, sizeof(a.label));
+        a.day_hdr = section_refs[i].header;
     }
 
     update_live_labels(offline);
