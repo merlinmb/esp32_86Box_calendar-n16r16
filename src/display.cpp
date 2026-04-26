@@ -300,6 +300,8 @@ lv_timer_t *s_title_timer  = nullptr;
 lv_obj_t *s_event_row_objs[CAL_MAX_EVENTS];
 uint8_t   s_event_row_count = 0;
 
+bool s_next_highlighted = false;
+
 CalEvent s_cached_ev;
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -327,6 +329,7 @@ void cleanup_timers() {
     s_expanded_row     = nullptr;
     s_day_anchor_count = 0;
     s_event_row_count  = 0;
+    s_next_highlighted = false;
     s_body             = nullptr;
     s_header           = nullptr;
     s_sticky_day_bar   = nullptr;
@@ -552,7 +555,7 @@ static void row_click_cb(lv_event_t *e) {
     lv_timer_set_repeat_count(s_expand_timer, 1);
 }
 
-lv_obj_t *add_timed_event_row(lv_obj_t *parent, const AgendaEntry &entry) {
+lv_obj_t *add_timed_event_row(lv_obj_t *parent, const AgendaEntry &entry, bool is_next) {
     // Outer wrapper: column so the tap-expanded detail sits below the main row
     lv_obj_t *row = lv_obj_create(parent);
     lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
@@ -574,7 +577,7 @@ lv_obj_t *add_timed_event_row(lv_obj_t *parent, const AgendaEntry &entry) {
     lv_obj_set_style_pad_column(line, 10, 0);
     lv_obj_set_layout(line, LV_LAYOUT_FLEX);
     lv_obj_set_flex_flow(line, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(line, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_flex_align(line, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
 
     lv_obj_t *time_lbl = create_label(line, &font_inter_semibold_14, COLOR_TEXT_1, LV_OPA_COVER, entry.time_start);
     lv_obj_set_width(time_lbl, 52);
@@ -643,6 +646,17 @@ lv_obj_t *add_timed_event_row(lv_obj_t *parent, const AgendaEntry &entry) {
 
     lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(row, row_click_cb, LV_EVENT_CLICKED, row);
+
+    if (is_next) {
+        // Small filled triangle (play symbol) just before the vertical calendar bar
+        lv_obj_t *tri = lv_label_create(row);
+        lv_label_set_text(tri, LV_SYMBOL_PLAY);
+        lv_obj_set_style_text_font(tri, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(tri, COLOR_ACCENT, 0);
+        lv_obj_add_flag(tri, LV_OBJ_FLAG_FLOATING);
+        lv_obj_set_pos(tri, 52, 11); // x: right of time label (52px), y: centred in 32px bar
+    }
+
     return row;
 }
 
@@ -702,7 +716,9 @@ lv_obj_t *add_day_section(lv_obj_t *parent, const char *heading,
     for (uint8_t i = 0; i < agenda.count; ++i) {
         const AgendaEntry &e = agenda.items[i];
         if (!e.is_all_day && event_overlaps_day(e, day_start, day_end)) {
-            lv_obj_t *row = add_timed_event_row(section, e);
+            const bool is_next = !s_next_highlighted && e.ts_end_local > (int32_t)::now();
+            if (is_next) s_next_highlighted = true;
+            lv_obj_t *row = add_timed_event_row(section, e, is_next);
             if (s_event_row_count < CAL_MAX_EVENTS) s_event_row_objs[s_event_row_count++] = row;
             has_content = true;
         }
