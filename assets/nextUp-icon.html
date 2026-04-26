@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>nextUp Icon Generator</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a1d24;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    gap: 40px;
+    font-family: monospace;
+    color: #E8EAF2;
+  }
+
+  h1 { font-size: 13px; letter-spacing: 0.15em; color: #8B90AA; text-transform: uppercase; }
+
+  .previews {
+    display: flex;
+    gap: 60px;
+    align-items: flex-end;
+  }
+
+  .preview-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .preview-block label {
+    font-size: 11px;
+    color: #50546A;
+    letter-spacing: 0.1em;
+  }
+
+  /* Dark bg preview */
+  .bg-dark { background: #000000; padding: 24px; border-radius: 4px; }
+  /* Light bg preview */
+  .bg-light { background: #E8EAF2; padding: 24px; border-radius: 4px; }
+  /* Actual size */
+  .bg-actual { background: #000000; padding: 8px; border-radius: 2px; border: 1px solid #111318; }
+
+  canvas { display: block; image-rendering: pixelated; }
+
+  .export-btn {
+    margin-top: 32px;
+    background: #5B8EF0;
+    color: #E8EAF2;
+    border: none;
+    padding: 8px 24px;
+    font-family: monospace;
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    cursor: pointer;
+    border-radius: 2px;
+  }
+  .export-btn:hover { background: #7aaaf4; }
+
+  .palette {
+    display: flex;
+    gap: 8px;
+  }
+  .swatch {
+    width: 24px;
+    height: 24px;
+    border-radius: 2px;
+    border: 1px solid #222;
+  }
+</style>
+</head>
+<body>
+
+<h1>nextUp — Icon Generator</h1>
+
+<div class="palette">
+  <div class="swatch" style="background:#000000" title="#000000 BG"></div>
+  <div class="swatch" style="background:#111318" title="#111318 Surface"></div>
+  <div class="swatch" style="background:#E8EAF2" title="#E8EAF2 Text"></div>
+  <div class="swatch" style="background:#5B8EF0" title="#5B8EF0 Accent"></div>
+  <div class="swatch" style="background:#E26D5A" title="#E26D5A Alert"></div>
+</div>
+
+<div class="previews">
+  <div class="preview-block">
+    <div class="bg-dark">
+      <canvas id="c-large-dark" width="16" height="16" style="width:128px;height:128px;"></canvas>
+    </div>
+    <label>128px on dark</label>
+  </div>
+
+  <div class="preview-block">
+    <div class="bg-dark">
+      <canvas id="c-64-dark" width="16" height="16" style="width:64px;height:64px;"></canvas>
+    </div>
+    <label>64px on dark</label>
+  </div>
+
+  <div class="preview-block">
+    <div class="bg-light">
+      <canvas id="c-64-light" width="16" height="16" style="width:64px;height:64px;"></canvas>
+    </div>
+    <label>64px on light</label>
+  </div>
+
+  <div class="preview-block">
+    <div class="bg-actual">
+      <canvas id="c-16" width="16" height="16" style="width:16px;height:16px;"></canvas>
+    </div>
+    <label>16px actual</label>
+  </div>
+</div>
+
+<button class="export-btn" onclick="exportPNG()">Export 16px PNG</button>
+
+<script>
+// ─── Palette ────────────────────────────────────────────────────────────────
+const C = {
+  transparent: 'rgba(0,0,0,0)',
+  bg:      '#000000',
+  surface: '#111318',
+  text:    '#E8EAF2',
+  accent:  '#5B8EF0',
+  coral:   '#E26D5A',
+  dim:     '#50546A',
+  mid:     '#8B90AA',
+};
+
+// ─── Icon pixel data (16×16) ─────────────────────────────────────────────────
+//
+//  Design concept:
+//    - Dark rounded-rect card (surface colour) = calendar page body
+//    - Two small rings at top = calendar binding holes (accent blue)
+//    - Three text lines (dim colour) = event list rows
+//    - Top row highlighted (text/white) = next event
+//    - Coral dot (bottom-right) = "up next" indicator
+//    - Thin blue top-stripe = today header bar
+//
+function drawIcon(ctx) {
+  const px = (x, y, color) => {
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y, 1, 1);
+  };
+
+  // Clear
+  ctx.clearRect(0, 0, 16, 16);
+
+  // ── Card body (surface) ──────────────────────────────
+  // Rounded rect: x1=1, y1=1, x2=14, y2=14
+  // Top-left corner round: skip (1,1) pixel
+  // Top-right corner round: skip (14,1)
+  // Bottom-left: skip (1,14)
+  // Bottom-right: skip (14,14)
+
+  for (let y = 1; y <= 14; y++) {
+    for (let x = 1; x <= 14; x++) {
+      // corner cutouts for rounding
+      if ((x === 1  && y === 1)  ||
+          (x === 14 && y === 1)  ||
+          (x === 1  && y === 14) ||
+          (x === 14 && y === 14)) continue;
+      px(x, y, C.surface);
+    }
+  }
+
+  // ── Blue header stripe (rows 1–3) ────────────────────
+  for (let x = 2; x <= 13; x++) {
+    px(x, 1, C.accent);
+    px(x, 2, C.accent);
+    if (x >= 3 && x <= 12) px(x, 3, C.accent);
+  }
+
+  // ── Calendar ring holes ──────────────────────────────
+  // Two small holes punched through the blue bar
+  px(4, 1, C.bg);
+  px(4, 2, C.bg);
+  px(4, 3, C.bg);
+  px(10, 1, C.bg);
+  px(10, 2, C.bg);
+  px(10, 3, C.bg);
+
+  // ── Event rows ───────────────────────────────────────
+  // Row 1: "next up" — highlighted white bar
+  for (let x = 2; x <= 12; x++) px(x, 5, C.text);
+  // small coral accent on left of first row
+  px(2, 5, C.coral);
+  px(2, 6, C.coral);
+
+  // Row 2: dim line (shorter)
+  for (let x = 3; x <= 11; x++) px(x, 7, C.dim);
+
+  // Row 3: dim line (even shorter)
+  for (let x = 3; x <= 9;  x++) px(x, 9, C.dim);
+
+  // Row 4: very dim
+  for (let x = 3; x <= 10; x++) px(x, 11, '#30344A');
+
+  // ── Coral "next" indicator dot (bottom-right) ────────
+  px(12, 12, C.coral);
+  px(13, 12, C.coral);
+  px(12, 13, C.coral);
+  px(13, 13, C.coral);
+
+  // ── Subtle bottom accent line ─────────────────────────
+  for (let x = 3; x <= 12; x++) px(x, 14, '#1c2030');
+}
+
+// ─── Render to all canvases ──────────────────────────────────────────────────
+const canvasIds = ['c-large-dark', 'c-64-dark', 'c-64-light', 'c-16'];
+canvasIds.forEach(id => {
+  const canvas = document.getElementById(id);
+  const ctx = canvas.getContext('2d');
+  drawIcon(ctx);
+});
+
+// ─── Export ──────────────────────────────────────────────────────────────────
+function exportPNG() {
+  const canvas = document.getElementById('c-16');
+  const link = document.createElement('a');
+  link.download = 'nextUp-icon-16x16.png';
+  link.href = canvas.toDataURL('image/png');
+  link.click();
+}
+</script>
+
+</body>
+</html>

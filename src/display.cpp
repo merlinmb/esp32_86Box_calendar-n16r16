@@ -466,12 +466,13 @@ void create_card_shell(bool offline) {
     lv_obj_set_style_pad_bottom(s_header, 10, 0);
     lv_obj_set_layout(s_header, LV_LAYOUT_FLEX);
     lv_obj_set_flex_flow(s_header, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(s_header, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(s_header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    s_title_label = create_label(s_header, &font_inter_semibold_14, COLOR_AZURE, LV_OPA_COVER, "nextUp");
+    s_title_label = create_label(s_header, &font_inter_bold_16, COLOR_AZURE, LV_OPA_COVER, "nextUp");
     lv_obj_set_style_text_letter_space(s_title_label, 1, 0);
+    lv_obj_set_style_text_align(s_title_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(s_title_label, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(s_title_label, 220);
+    lv_obj_set_flex_grow(s_title_label, 1);
     lv_obj_add_flag(s_title_label, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(s_title_label, title_click_cb, LV_EVENT_CLICKED, nullptr);
 
@@ -489,6 +490,14 @@ void create_card_shell(bool offline) {
     s_mqtt_status_label = create_label(right, &font_jetbrainsmono_medium_12, COLOR_TEXT_2, LV_OPA_COVER, "");
     s_offline_label = create_label(right, &font_jetbrainsmono_medium_12, COLOR_ALERT, LV_OPA_COVER, offline ? "offline" : "");
     if (!offline) lv_obj_add_flag(s_offline_label, LV_OBJ_FLAG_HIDDEN);
+
+    // Logo placed after all flex children so it doesn't affect flex layout;
+    // positioned absolutely at the left edge of the header.
+    lv_obj_t *logo = lv_img_create(s_header);
+    lv_img_set_src(logo, &logo3_img);
+    lv_obj_set_size(logo, 28, 28);
+    lv_obj_add_flag(logo, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_align(logo, LV_ALIGN_LEFT_MID, 0, 0);
 
 }
 
