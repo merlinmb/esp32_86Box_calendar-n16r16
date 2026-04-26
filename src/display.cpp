@@ -468,7 +468,7 @@ void create_card_shell(bool offline) {
     lv_obj_set_flex_flow(s_header, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(s_header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    s_title_label = create_label(s_header, &font_inter_bold_16, COLOR_AZURE, LV_OPA_COVER, "nextUp");
+    s_title_label = create_label(s_header, &font_inter_bold_18, COLOR_AZURE, LV_OPA_COVER, "nextUp");
     lv_obj_set_style_text_letter_space(s_title_label, 1, 0);
     lv_obj_set_style_text_align(s_title_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(s_title_label, LV_LABEL_LONG_DOT);
@@ -663,7 +663,7 @@ lv_obj_t *add_timed_event_row(lv_obj_t *parent, const AgendaEntry &entry, bool i
         lv_obj_set_style_text_font(tri, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_color(tri, COLOR_ACCENT, 0);
         lv_obj_add_flag(tri, LV_OBJ_FLAG_FLOATING);
-        lv_obj_set_pos(tri, 52, 11); // x: right of time label (52px), y: centred in 32px bar
+           lv_obj_set_pos(tri, 50, 9); // x: right of time label, y: centred in 32px bar
     }
 
     return row;
