@@ -48,15 +48,17 @@ static void handle_root() {
         "</head><body><div class='card'>"
         "<h1>nextUp &mdash; Calendar Setup</h1>"
         "<form method='POST' action='/save'>"
-        "<label>WiFi SSID</label>"
-        "<input name='ssid' required maxlength='63'>"
-        "<label>WiFi Password</label>"
+        "<label>WiFi SSID <span class='note'>(leave blank to keep current)</span></label>"
+        "<input name='ssid' maxlength='63' value='");
+    html += String(s_cfg_ptr ? s_cfg_ptr->wifi_ssid : "");
+    html += F("'>"
+        "<label>WiFi Password <span class='note'>(leave blank to keep current)</span></label>"
         "<input name='pass' type='password' maxlength='63'>"
         "<label>Calendar Server URL</label>"
         "<input name='url' maxlength='255' value='");
     html += String(s_cfg_ptr ? s_cfg_ptr->server_url : "");
     html += F("'>"
-        "<label>Read Token <span class='note'>(optional)</span></label>"
+        "<label>Read Token <span class='note'>(leave blank to keep current)</span></label>"
         "<input name='token' maxlength='127'>"
         "<label>Timezone</label>"
         "<select name='tz'>");
@@ -87,18 +89,32 @@ static void handle_root() {
 static void handle_save() {
     if (!s_cfg_ptr) { s_server.send(500, "text/plain", "err"); return; }
 
+    // Detect whether WiFi credentials are actually changing
     String ssid = s_server.arg("ssid");
-    if (ssid.length() == 0) {
-        s_server.send(400, "text/plain", "SSID required");
+    String pass = s_server.arg("pass");
+    bool wifi_changed = false;
+
+    if (ssid.length() > 0 && strcmp(ssid.c_str(), s_cfg_ptr->wifi_ssid) != 0) {
+        wifi_changed = true;
+    }
+    if (pass.length() > 0) {
+        wifi_changed = true;
+    }
+
+    // In AP mode a valid SSID is required to leave setup
+    if (g_ap_mode && ssid.length() == 0) {
+        s_server.send(400, "text/plain", "SSID required in setup mode");
         return;
     }
 
-    strncpy(s_cfg_ptr->wifi_ssid,     ssid.c_str(), sizeof(s_cfg_ptr->wifi_ssid) - 1);
-    s_cfg_ptr->wifi_ssid[sizeof(s_cfg_ptr->wifi_ssid) - 1] = '\0';
-
-    String pass = s_server.arg("pass");
-    strncpy(s_cfg_ptr->wifi_password, pass.c_str(), sizeof(s_cfg_ptr->wifi_password) - 1);
-    s_cfg_ptr->wifi_password[sizeof(s_cfg_ptr->wifi_password) - 1] = '\0';
+    if (ssid.length() > 0) {
+        strncpy(s_cfg_ptr->wifi_ssid, ssid.c_str(), sizeof(s_cfg_ptr->wifi_ssid) - 1);
+        s_cfg_ptr->wifi_ssid[sizeof(s_cfg_ptr->wifi_ssid) - 1] = '\0';
+    }
+    if (pass.length() > 0) {
+        strncpy(s_cfg_ptr->wifi_password, pass.c_str(), sizeof(s_cfg_ptr->wifi_password) - 1);
+        s_cfg_ptr->wifi_password[sizeof(s_cfg_ptr->wifi_password) - 1] = '\0';
+    }
 
     String url = s_server.arg("url");
     if (url.length() > 0) {
@@ -106,9 +122,12 @@ static void handle_save() {
         s_cfg_ptr->server_url[sizeof(s_cfg_ptr->server_url) - 1] = '\0';
     }
 
+    // Token: blank means keep existing; to clear a token user would need to submit a space
     String token = s_server.arg("token");
-    strncpy(s_cfg_ptr->read_token, token.c_str(), sizeof(s_cfg_ptr->read_token) - 1);
-    s_cfg_ptr->read_token[sizeof(s_cfg_ptr->read_token) - 1] = '\0';
+    if (token.length() > 0) {
+        strncpy(s_cfg_ptr->read_token, token.c_str(), sizeof(s_cfg_ptr->read_token) - 1);
+        s_cfg_ptr->read_token[sizeof(s_cfg_ptr->read_token) - 1] = '\0';
+    }
 
     String tz = s_server.arg("tz");
     if (tz.length() > 0) {
@@ -117,33 +136,47 @@ static void handle_save() {
     }
 
     int refresh = s_server.arg("refresh").toInt();
-    if (refresh < 60 || refresh > 3600) refresh = 300;
-    s_cfg_ptr->refresh_secs = (uint16_t)refresh;
+    if (refresh >= 60 && refresh <= 3600) s_cfg_ptr->refresh_secs = (uint16_t)refresh;
 
     String mqtt_host = s_server.arg("mqtt_host");
-    const char *mqtt_host_value = mqtt_host.length() > 0 ? mqtt_host.c_str() : s_cfg_ptr->mqtt_host;
-    strncpy(s_cfg_ptr->mqtt_host, mqtt_host_value, sizeof(s_cfg_ptr->mqtt_host) - 1);
-    s_cfg_ptr->mqtt_host[sizeof(s_cfg_ptr->mqtt_host) - 1] = '\0';
+    if (mqtt_host.length() > 0) {
+        strncpy(s_cfg_ptr->mqtt_host, mqtt_host.c_str(), sizeof(s_cfg_ptr->mqtt_host) - 1);
+        s_cfg_ptr->mqtt_host[sizeof(s_cfg_ptr->mqtt_host) - 1] = '\0';
+    }
 
     int mqtt_port = s_server.arg("mqtt_port").toInt();
-    if (mqtt_port < 1 || mqtt_port > 65535) mqtt_port = s_cfg_ptr->mqtt_port;
-    s_cfg_ptr->mqtt_port = (uint16_t)mqtt_port;
+    if (mqtt_port >= 1 && mqtt_port <= 65535) s_cfg_ptr->mqtt_port = (uint16_t)mqtt_port;
 
     String mqtt_topic = s_server.arg("mqtt_topic");
-    const char *mqtt_topic_value = mqtt_topic.length() > 0 ? mqtt_topic.c_str() : s_cfg_ptr->mqtt_topic;
-    strncpy(s_cfg_ptr->mqtt_topic, mqtt_topic_value, sizeof(s_cfg_ptr->mqtt_topic) - 1);
-    s_cfg_ptr->mqtt_topic[sizeof(s_cfg_ptr->mqtt_topic) - 1] = '\0';
+    if (mqtt_topic.length() > 0) {
+        strncpy(s_cfg_ptr->mqtt_topic, mqtt_topic.c_str(), sizeof(s_cfg_ptr->mqtt_topic) - 1);
+        s_cfg_ptr->mqtt_topic[sizeof(s_cfg_ptr->mqtt_topic) - 1] = '\0';
+    }
 
     config_save(*s_cfg_ptr);
 
-    s_server.send(200, "text/html",
-        "<!DOCTYPE html><html><body style='background:#0b0c11;color:#e8eaf2;"
-        "font-family:system-ui;display:flex;justify-content:center;padding:40px'>"
-        "<div style='text-align:center'>"
-        "<p style='color:#5b8ef0;font-size:20px'>Saved! Restarting...</p>"
-        "</div></body></html>");
-    delay(1500);
-    ESP.restart();
+    if (wifi_changed || g_ap_mode) {
+        s_server.send(200, "text/html",
+            "<!DOCTYPE html><html><body style='background:#0b0c11;color:#e8eaf2;"
+            "font-family:system-ui;display:flex;justify-content:center;padding:40px'>"
+            "<div style='text-align:center'>"
+            "<p style='color:#5b8ef0;font-size:20px'>Saved! Restarting...</p>"
+            "</div></body></html>");
+        delay(1500);
+        ESP.restart();
+    } else {
+        s_server.send(200, "text/html",
+            "<!DOCTYPE html><html><head>"
+            "<meta charset='utf-8'>"
+            "<meta http-equiv='refresh' content='3;url=/'>"
+            "</head><body style='background:#0b0c11;color:#e8eaf2;"
+            "font-family:system-ui;display:flex;justify-content:center;padding:40px'>"
+            "<div style='text-align:center'>"
+            "<p style='color:#5b8ef0;font-size:20px'>Saved!</p>"
+            "<p style='color:#8b90aa;font-size:14px'>Settings applied. Returning to settings...</p>"
+            "</div></body></html>");
+        on_config_updated();
+    }
 }
 
 void ws_start_ap(AppConfig &cfg) {

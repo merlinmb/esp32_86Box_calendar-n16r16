@@ -111,7 +111,7 @@ static bool          g_wifi_connected = false;
 static const unsigned long WIFI_RECONNECT_INTERVAL_MS = 10000UL;
 static unsigned long g_last_wifi_retry = 0;
 static int g_wifi_retry_count = 0;
-static const int WIFI_MAX_RETRIES = 10;
+static const int WIFI_MAX_RETRIES = 3;
 static const unsigned long WIFI_RETRY_BACKOFF_MS = 2000UL;
 
 static void begin_wifi_station() {
@@ -187,6 +187,17 @@ static void sync_time() {
     begin_wifi_station();
 }
 
+// Called from web_server when settings are saved without a WiFi change
+void on_config_updated() {
+    Serial.println("[cfg] Settings updated live — re-syncing");
+    g_tz = tz_lookup(g_cfg.timezone);
+    if (g_wifi_connected) {
+        sync_time();
+        mqtt_client_init(g_cfg);
+    }
+    g_first_fetch = true;  // trigger immediate calendar re-fetch
+}
+
 void loadConfig(){
     config_load(g_cfg);
   Serial.printf("[boot] Config loaded. WiFi configured: %s\n",
@@ -204,9 +215,10 @@ void setupWifi()
 {
     display_show_connecting(g_cfg.wifi_ssid);
 
+    Serial.printf("[boot] Connecting to WiFi AP: '%s'\n", g_cfg.wifi_ssid);
     // Robust WiFi connection with retries and exponential backoff
     for (int attempt = 1; attempt <= WIFI_MAX_RETRIES; attempt++) {
-        Serial.printf("[boot] WiFi connection attempt %d/%d\n", attempt, WIFI_MAX_RETRIES);
+        Serial.printf("[boot] WiFi connection attempt %d/%d to '%s'\n", attempt, WIFI_MAX_RETRIES, g_cfg.wifi_ssid);
         begin_wifi_station();
 
         unsigned long start = millis();
