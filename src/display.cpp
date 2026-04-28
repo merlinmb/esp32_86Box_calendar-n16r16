@@ -370,19 +370,168 @@ bool event_overlaps_day(const AgendaEntry &entry, time_t day_start, time_t day_e
     return end > day_start && entry.ts_start_local < day_end;
 }
 
+static lv_font_t s_font_inter_regular_12_with_symbols;
+static lv_font_t s_font_inter_regular_14_with_symbols;
+static lv_font_t s_font_inter_semibold_14_with_symbols;
+static bool s_font_fallbacks_initialized = false;
+
+static void init_font_fallbacks() {
+    if (s_font_fallbacks_initialized) return;
+
+    s_font_inter_regular_12_with_symbols = font_inter_regular_12;
+    s_font_inter_regular_12_with_symbols.fallback = &font_symbols_12;
+
+    s_font_inter_regular_14_with_symbols = font_inter_regular_14;
+    s_font_inter_regular_14_with_symbols.fallback = &font_symbols_14;
+
+    s_font_inter_semibold_14_with_symbols = font_inter_semibold_14;
+    s_font_inter_semibold_14_with_symbols.fallback = &font_symbols_14;
+
+    s_font_fallbacks_initialized = true;
+}
+
+static const lv_font_t *font_with_symbol_fallback(const lv_font_t *font) {
+    if (!font) return font;
+    init_font_fallbacks();
+
+    if (font == &font_inter_regular_12) return &s_font_inter_regular_12_with_symbols;
+    if (font == &font_inter_regular_14) return &s_font_inter_regular_14_with_symbols;
+    if (font == &font_inter_semibold_14) return &s_font_inter_semibold_14_with_symbols;
+    return font;
+}
+
+static bool is_supported_text_codepoint(uint32_t cp) {
+    if ((cp >= 0x20 && cp <= 0x7E) || cp == 0x2019 || cp == 0x2013 || cp == 0x2026) return true;
+
+    switch (cp) {
+        case 0x2600: // sun
+        case 0x2601: // cloud
+        case 0x2602: // umbrella
+        case 0x2614: // umbrella with rain drops
+        case 0x2744: // snowflake
+        case 0x26A1: // lightning
+        case 0x263A: // smiling face
+        case 0x2665: // heart suit
+        case 0x2764: // heavy heart
+        case 0x2708: // airplane
+        case 0x2709: // envelope
+        case 0x260E: // telephone
+        case 0x2615: // hot beverage
+        case 0x26A0: // warning
+        case 0x2611: // checked ballot
+        case 0x2713: // check mark
+        case 0x2714: // heavy check mark
+        case 0x2716: // heavy multiplication x
+        case 0x2717: // ballot x
+        case 0x266A: // eighth note
+        case 0x266B: // beamed notes
+        case 0x2699: // gear
+        case 0x267B: // recycling symbol
+        case 0x2691: // black flag
+        case 0x27A1: // black rightwards arrow
+            return true;
+        default:
+            return false;
+    }
+}
+
+static size_t decode_utf8_codepoint(const char *s, size_t remaining, uint32_t &cp_out) {
+    if (!s || remaining == 0) return 0;
+    const uint8_t b0 = static_cast<uint8_t>(s[0]);
+
+    if (b0 < 0x80) {
+        cp_out = b0;
+        return 1;
+    }
+
+    if ((b0 & 0xE0) == 0xC0) {
+        if (remaining < 2) return 0;
+        const uint8_t b1 = static_cast<uint8_t>(s[1]);
+        if ((b1 & 0xC0) != 0x80) return 0;
+        const uint32_t cp = ((b0 & 0x1F) << 6) | (b1 & 0x3F);
+        if (cp < 0x80) return 0; // overlong
+        cp_out = cp;
+        return 2;
+    }
+
+    if ((b0 & 0xF0) == 0xE0) {
+        if (remaining < 3) return 0;
+        const uint8_t b1 = static_cast<uint8_t>(s[1]);
+        const uint8_t b2 = static_cast<uint8_t>(s[2]);
+        if ((b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80) return 0;
+        const uint32_t cp = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
+        if (cp < 0x800) return 0; // overlong
+        if (cp >= 0xD800 && cp <= 0xDFFF) return 0; // surrogate range
+        cp_out = cp;
+        return 3;
+    }
+
+    if ((b0 & 0xF8) == 0xF0) {
+        if (remaining < 4) return 0;
+        const uint8_t b1 = static_cast<uint8_t>(s[1]);
+        const uint8_t b2 = static_cast<uint8_t>(s[2]);
+        const uint8_t b3 = static_cast<uint8_t>(s[3]);
+        if ((b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80 || (b3 & 0xC0) != 0x80) return 0;
+        const uint32_t cp = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) |
+                            ((b2 & 0x3F) << 6) | (b3 & 0x3F);
+        if (cp < 0x10000 || cp > 0x10FFFF) return 0;
+        cp_out = cp;
+        return 4;
+    }
+
+    return 0;
+}
+
+static void sanitize_label_text(const char *text, char *out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    if (!text) return;
+
+    const size_t in_len = strlen(text);
+    size_t out_i = 0;
+    for (size_t i = 0; i < in_len && out_i + 1 < out_size;) {
+        uint32_t cp = 0;
+        size_t seq_len = decode_utf8_codepoint(text + i, in_len - i, cp);
+
+        // Skip malformed bytes one-by-one so we can continue parsing.
+        if (seq_len == 0) {
+            ++i;
+            continue;
+        }
+
+        if (is_supported_text_codepoint(cp)) {
+            if (out_i + seq_len < out_size) {
+                memcpy(out + out_i, text + i, seq_len);
+                out_i += seq_len;
+            } else {
+                break;
+            }
+        }
+
+        i += seq_len;
+    }
+
+    out[out_i] = '\0';
+}
+
 lv_obj_t *create_label(lv_obj_t *parent, const lv_font_t *font,
                         lv_color_t color, lv_opa_t opa, const char *text) {
     lv_obj_t *lbl = lv_label_create(parent);
-    lv_obj_set_style_text_font(lbl, font, 0);
+    lv_obj_set_style_text_font(lbl, font_with_symbol_fallback(font), 0);
     lv_obj_set_style_text_color(lbl, color, 0);
     lv_obj_set_style_text_opa(lbl, opa, 0);
-    lv_label_set_text(lbl, text ? text : "");
+    char sanitized[192];
+    sanitize_label_text(text, sanitized, sizeof(sanitized));
+    lv_label_set_text(lbl, sanitized);
     return lbl;
 }
 
 
 void set_text(lv_obj_t *lbl, const char *text) {
-    if (lbl) lv_label_set_text(lbl, text ? text : "");
+    if (!lbl) return;
+    char sanitized[192];
+    sanitize_label_text(text, sanitized, sizeof(sanitized));
+    lv_label_set_text(lbl, sanitized);
 }
 
 void collapse_title();
@@ -947,6 +1096,8 @@ void display_init() {
     Serial.printf("SRAM free: %d  PSRAM free: %d\n",
                   heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                   heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
+    init_font_fallbacks();
 }
 
 void display_show_setup() {
