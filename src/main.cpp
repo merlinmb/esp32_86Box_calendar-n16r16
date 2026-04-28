@@ -127,7 +127,10 @@ static void sync_time() {
     bool ok = false;
     for (int i = 0; i < 10 && !ok; i++) {
         ok = g_ntp.forceUpdate();
-        if (!ok) delay(500);
+        if (!ok) {
+            lv_timer_handler();
+            delay(500);
+        }
     }
 
     time_t utc = (time_t)g_ntp.getEpochTime();
@@ -365,8 +368,10 @@ void loop()
         g_first_fetch = false;
 
         Serial.println("[loop] Fetching calendar...");
+        lv_timer_handler();
         static CalEvent tmp;
         bool ok = calendar_fetch(g_cfg, tmp, g_tz);
+        lv_timer_handler();
 
         if (ok) {
             g_event   = tmp;

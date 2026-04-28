@@ -105,7 +105,7 @@ void mqtt_client_init(AppConfig &cfg) {
     s_mqtt.setServer(cfg.mqtt_host, cfg.mqtt_port);
     s_mqtt.setCallback(on_message);
     s_mqtt.setKeepAlive(30);
-    s_mqtt.setSocketTimeout(10);
+    s_mqtt.setSocketTimeout(3);
     try_connect();
 }
 
