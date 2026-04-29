@@ -212,7 +212,46 @@ bool calendar_fetch(const AppConfig &cfg, CalEvent &ev, Timezone *tz) {
             return true;  // Successful fetch, just no events
         }
 
-        const time_t window_start = local_day_start(::now());
+        const time_t now_ts = ::now();
+        // Sanity-check: if time hasn't synced yet (NTP failed), epoch will be near 0
+        // and all real events fall outside the 1970 window — skip filtering entirely.
+        static constexpr time_t MIN_SANE_EPOCH = 1700000000L; // ~Nov 2023
+        if (now_ts < MIN_SANE_EPOCH) {
+            Serial.printf("[cal] Clock not synced (now=%ld) — skipping time-window filter\n", (long)now_ts);
+            for (JsonObject entry_json : events) {
+                if (ev.count >= CAL_MAX_EVENTS) break;
+                const char *title     = entry_json["title"] | "";
+                const char *start_str = entry_json["start"] | "";
+                const char *end_str   = entry_json["end"]   | "";
+                const bool is_all_day = entry_json["isAllDay"] | false;
+                if (!title[0]) continue;
+                const int32_t utc_start = parse_iso8601_utc(start_str);
+                int32_t       utc_end   = parse_iso8601_utc(end_str);
+                const int32_t start_local = tz ? (int32_t)tz->toLocal((time_t)utc_start) : utc_start;
+                int32_t end_local = utc_end > 0 ? (tz ? (int32_t)tz->toLocal((time_t)utc_end) : utc_end) : 0;
+                if (end_local <= start_local)
+                    end_local = is_all_day ? start_local + 86400 : start_local;
+                AgendaEntry &item = ev.items[ev.count++];
+                copy_string(item.title,         sizeof(item.title),         title);
+                copy_string(item.location,      sizeof(item.location),      entry_json["location"]  | "");
+                copy_string(item.calendar_name, sizeof(item.calendar_name), entry_json["calendar"]  | "");
+                copy_string(item.source,        sizeof(item.source),        entry_json["source"]    | "");
+                item.ts_start_local = start_local;
+                item.ts_end_local   = end_local;
+                item.is_all_day     = is_all_day;
+                if (is_all_day) { item.time_start[0] = '\0'; item.time_end[0] = '\0'; }
+                else { epoch_to_hhmm(start_local, item.time_start); epoch_to_hhmm(end_local, item.time_end); }
+            }
+            ev.has_event = ev.count > 0;
+            s_last_successful_read = ev;
+            s_has_last_successful_read = true;
+            return true;
+        }
+
+        Serial.printf("[cal] Time window: now=%ld  window=[%ld, %ld)\n",
+                      (long)now_ts, (long)local_day_start(now_ts), (long)(local_day_start(now_ts) + 7*86400));
+
+        const time_t window_start = local_day_start(now_ts);
         const time_t window_end = window_start + (7 * 86400);
 
         for (JsonObject entry_json : events) {
@@ -238,6 +277,8 @@ bool calendar_fetch(const AppConfig &cfg, CalEvent &ev, Timezone *tz) {
             }
 
             if (!overlaps_day_window(start_local, end_local, window_start, window_end)) {
+                Serial.printf("[cal] Skip '%s': start_local=%ld end_local=%ld window=[%ld,%ld)\n",
+                              title, (long)start_local, (long)end_local, (long)window_start, (long)window_end);
                 continue;
             }
 

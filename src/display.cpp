@@ -297,8 +297,12 @@ lv_timer_t *s_expand_timer = nullptr;
 lv_timer_t *s_return_timer = nullptr;
 lv_timer_t *s_title_timer  = nullptr;
 
-lv_obj_t *s_event_row_objs[CAL_MAX_EVENTS];
-uint8_t   s_event_row_count = 0;
+struct EventRowRef {
+    lv_obj_t  *obj;
+    int32_t    ts_end_local;
+};
+EventRowRef s_event_row_objs[CAL_MAX_EVENTS];
+uint8_t     s_event_row_count = 0;
 
 bool s_next_highlighted = false;
 
@@ -330,8 +334,14 @@ void cleanup_timers() {
     s_day_anchor_count = 0;
     s_event_row_count  = 0;
     s_next_highlighted = false;
+    s_card             = nullptr;
     s_body             = nullptr;
     s_header           = nullptr;
+    s_title_label      = nullptr;
+    s_offline_label    = nullptr;
+    s_wifi_status_label = nullptr;
+    s_mqtt_status_label = nullptr;
+    s_background_clock = nullptr;
     s_sticky_day_bar   = nullptr;
     s_sticky_day_label = nullptr;
     s_title_expanded   = false;
@@ -368,6 +378,10 @@ bool event_overlaps_day(const AgendaEntry &entry, time_t day_start, time_t day_e
         ? entry.ts_end_local
         : entry.ts_start_local + (entry.is_all_day ? 86400 : 60);
     return end > day_start && entry.ts_start_local < day_end;
+}
+
+bool is_live_obj(lv_obj_t *obj) {
+    return obj && lv_obj_is_valid(obj);
 }
 
 static lv_font_t s_font_inter_regular_12_with_symbols;
@@ -528,7 +542,7 @@ lv_obj_t *create_label(lv_obj_t *parent, const lv_font_t *font,
 
 
 void set_text(lv_obj_t *lbl, const char *text) {
-    if (!lbl) return;
+    if (!is_live_obj(lbl)) return;
     char sanitized[192];
     sanitize_label_text(text, sanitized, sizeof(sanitized));
     lv_label_set_text(lbl, sanitized);
@@ -537,7 +551,7 @@ void set_text(lv_obj_t *lbl, const char *text) {
 void collapse_title();
 
 void update_title_label() {
-    if (!s_title_label) return;
+    if (!is_live_obj(s_title_label)) return;
 
     if (!s_title_expanded || WiFi.status() != WL_CONNECTED) {
         lv_label_set_text(s_title_label, "nextUp");
@@ -586,6 +600,8 @@ static void title_click_cb(lv_event_t *) {
 // ── UI build ───────────────────────────────────────────────────────────────
 
 void create_card_shell(bool offline) {
+    cleanup_timers();
+
     lv_obj_t *screen = lv_scr_act();
     lv_obj_clean(screen);
     lv_obj_set_style_bg_color(screen, COLOR_BG, 0);
@@ -680,10 +696,14 @@ void add_all_day_row(lv_obj_t *parent, const AgendaEntry &entry) {
 }
 
 void collapse_expanded_row() {
-    if (!s_expanded_row) return;
+    if (!is_live_obj(s_expanded_row)) {
+        s_expanded_row = nullptr;
+        if (s_expand_timer) { lv_timer_del(s_expand_timer); s_expand_timer = nullptr; }
+        return;
+    }
     if (lv_obj_get_child_cnt(s_expanded_row) >= 2) {
         lv_obj_t *detail = lv_obj_get_child(s_expanded_row, 1);
-        lv_obj_add_flag(detail, LV_OBJ_FLAG_HIDDEN);
+        if (is_live_obj(detail)) lv_obj_add_flag(detail, LV_OBJ_FLAG_HIDDEN);
         lv_obj_invalidate(s_expanded_row);
     }
     s_expanded_row = nullptr;
@@ -877,7 +897,7 @@ lv_obj_t *add_day_section(lv_obj_t *parent, const char *heading,
             const bool is_next = !s_next_highlighted && e.ts_end_local > (int32_t)::now();
             if (is_next) s_next_highlighted = true;
             lv_obj_t *row = add_timed_event_row(section, e, is_next);
-            if (s_event_row_count < CAL_MAX_EVENTS) s_event_row_objs[s_event_row_count++] = row;
+            if (s_event_row_count < CAL_MAX_EVENTS) s_event_row_objs[s_event_row_count++] = {row, e.ts_end_local};
             has_content = true;
         }
     }
@@ -886,7 +906,7 @@ lv_obj_t *add_day_section(lv_obj_t *parent, const char *heading,
 }
 
 void update_sticky_day_label() {
-    if (!s_sticky_day_label || !s_body || s_day_anchor_count == 0) return;
+    if (!is_live_obj(s_sticky_day_label) || !is_live_obj(s_body) || s_day_anchor_count == 0) return;
     const lv_coord_t scroll_y = lv_obj_get_scroll_y(s_body);
     int8_t active = 0;
     for (uint8_t i = 0; i < s_day_anchor_count; ++i) {
@@ -894,7 +914,7 @@ void update_sticky_day_label() {
     }
     lv_label_set_text(s_sticky_day_label, s_day_anchors[active].label);
     for (uint8_t i = 0; i < s_day_anchor_count; ++i) {
-        if (!s_day_anchors[i].day_hdr) continue;
+        if (!is_live_obj(s_day_anchors[i].day_hdr)) continue;
         if (i == (uint8_t)active)
             lv_obj_add_flag(s_day_anchors[i].day_hdr, LV_OBJ_FLAG_HIDDEN);
         else
@@ -911,13 +931,13 @@ static void body_scroll_cb(lv_event_t *) {
 }
 
 lv_coord_t compute_return_target_y() {
-    if (!s_body) return 0;
+    if (!is_live_obj(s_body)) return 0;
     const int32_t now_ts = (int32_t)::now();
     for (uint8_t i = 0; i < s_event_row_count; ++i) {
-        const AgendaEntry &entry = s_cached_ev.items[i];
-        if (entry.ts_end_local > now_ts && s_event_row_objs[i]) {
-            lv_obj_t *parent = lv_obj_get_parent(s_event_row_objs[i]);
-            return lv_obj_get_y(s_event_row_objs[i]) + (parent ? lv_obj_get_y(parent) : 0);
+        const EventRowRef &ref = s_event_row_objs[i];
+        if (ref.ts_end_local > now_ts && is_live_obj(ref.obj)) {
+            lv_obj_t *parent = lv_obj_get_parent(ref.obj);
+            return lv_obj_get_y(ref.obj) + (is_live_obj(parent) ? lv_obj_get_y(parent) : 0);
         }
     }
     if (s_day_anchor_count > 1) return s_day_anchors[1].top_y;
@@ -927,7 +947,7 @@ lv_coord_t compute_return_target_y() {
 static void return_timer_cb(lv_timer_t *) {
     collapse_expanded_row();
     lv_coord_t target = compute_return_target_y();
-    lv_obj_scroll_to_y(s_body, target, LV_ANIM_ON);
+    if (is_live_obj(s_body)) lv_obj_scroll_to_y(s_body, target, LV_ANIM_ON);
     update_sticky_day_label();
 }
 
@@ -936,7 +956,7 @@ void update_live_labels(bool offline) {
         collapse_title();
     }
     update_title_label();
-    if (s_background_clock) {
+    if (is_live_obj(s_background_clock)) {
         if (s_wifi_connected) {
             char tt[6];
             format_hhmm(tt, sizeof(tt));
@@ -946,7 +966,7 @@ void update_live_labels(bool offline) {
             lv_obj_add_flag(s_background_clock, LV_OBJ_FLAG_HIDDEN);
         }
     }
-    if (s_wifi_status_label) {
+    if (is_live_obj(s_wifi_status_label)) {
         lv_label_set_text(s_wifi_status_label, "wifi down");
         lv_obj_set_style_text_color(s_wifi_status_label, COLOR_ALERT, 0);
         if (s_wifi_connected) {
@@ -955,7 +975,7 @@ void update_live_labels(bool offline) {
             lv_obj_clear_flag(s_wifi_status_label, LV_OBJ_FLAG_HIDDEN);
         }
     }
-    if (s_mqtt_status_label) {
+    if (is_live_obj(s_mqtt_status_label)) {
         lv_label_set_text(s_mqtt_status_label, "mqtt down");
         lv_obj_set_style_text_color(s_mqtt_status_label, COLOR_ALERT, 0);
         if (s_mqtt_connected) {
@@ -964,7 +984,7 @@ void update_live_labels(bool offline) {
             lv_obj_clear_flag(s_mqtt_status_label, LV_OBJ_FLAG_HIDDEN);
         }
     }
-    if (s_offline_label) {
+    if (is_live_obj(s_offline_label)) {
         if (offline) {
             lv_obj_clear_flag(s_offline_label, LV_OBJ_FLAG_HIDDEN);
             lv_label_set_text(s_offline_label, "offline");

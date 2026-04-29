@@ -107,6 +107,7 @@ static unsigned long g_last_breathe = 0;
 static unsigned long g_last_fetch   = 0;
 static bool          g_first_fetch  = true;
 static bool          g_wifi_connected = false;
+static bool          g_time_synced    = false;
 
 static const unsigned long WIFI_RECONNECT_INTERVAL_MS = 10000UL;
 static unsigned long g_last_wifi_retry = 0;
@@ -121,32 +122,55 @@ static void begin_wifi_station() {
   WiFi.begin(g_cfg.wifi_ssid, g_cfg.wifi_password);
 }
 
-static void sync_time() {
+static constexpr time_t NTP_MIN_SANE_EPOCH = 1700000000L; // ~Nov 2023
+
+static bool sync_time() {
     g_tz = tz_lookup(g_cfg.timezone);
 
+    static const int NTP_MAX_ATTEMPTS = 20;
+    static const int NTP_RETRY_DELAY_MS = 500;
+
     bool ok = false;
-    for (int i = 0; i < 10 && !ok; i++) {
+    for (int i = 1; i <= NTP_MAX_ATTEMPTS && !ok; i++) {
         ok = g_ntp.forceUpdate();
+        Serial.printf("[ntp] Attempt %d/%d: %s\n", i, NTP_MAX_ATTEMPTS, ok ? "OK" : "failed");
         if (!ok) {
             lv_timer_handler();
-            delay(500);
+            delay(NTP_RETRY_DELAY_MS);
         }
     }
 
+    if (!ok) {
+        Serial.println("[ntp] All attempts failed — clock not set");
+        return false;
+    }
+
     time_t utc = (time_t)g_ntp.getEpochTime();
+    if (utc < NTP_MIN_SANE_EPOCH) {
+        Serial.printf("[ntp] Received implausible epoch %ld — ignoring\n", (long)utc);
+        return false;
+    }
+
     time_t local = g_tz->toLocal(utc);
     setTime(local);
-    Serial.printf("[ntp] UTC=%ld  local=%ld  tz=%s\n",
+    g_time_synced = true;
+    Serial.printf("[ntp] Synced. UTC=%ld  local=%ld  tz=%s\n",
                   (long)utc, (long)local, g_cfg.timezone);
+    return true;
 }
 
-  static void on_wifi_connected(const char *reason) {
+static void on_wifi_connected(const char *reason) {
     g_wifi_connected = true;
     Serial.printf("[wifi] %s. IP: %s\n", reason, WiFi.localIP().toString().c_str());
-    g_ntp.begin();
-    sync_time();
+    if (!g_time_synced) {
+        g_ntp.begin();
+        if (!sync_time()) {
+            // Will be retried from the loop until it succeeds
+            Serial.println("[ntp] Startup sync failed — will retry in loop");
+        }
+    }
     display_set_connection_status(true, mqtt_client_connected());
-  }
+}
 
   static void maintain_wifi() {
     if (g_ap_mode || g_cfg.wifi_ssid[0] == '\0') return;
@@ -195,7 +219,14 @@ void on_config_updated() {
     Serial.println("[cfg] Settings updated live — re-syncing");
     g_tz = tz_lookup(g_cfg.timezone);
     if (g_wifi_connected) {
-        sync_time();
+        // Re-apply timezone to the last known UTC time — no NTP re-fetch needed
+        time_t utc = (time_t)g_ntp.getEpochTime();
+        if (utc >= NTP_MIN_SANE_EPOCH) {
+            time_t local = g_tz->toLocal(utc);
+            setTime(local);
+            Serial.printf("[cfg] Timezone updated. UTC=%ld  local=%ld  tz=%s\n",
+                          (long)utc, (long)local, g_cfg.timezone);
+        }
         mqtt_client_init(g_cfg);
     }
     g_first_fetch = true;  // trigger immediate calendar re-fetch
@@ -350,20 +381,18 @@ void loop()
     mqtt_client_tick();
     display_set_connection_status(g_wifi_connected, mqtt_client_connected());
 
-    static unsigned long s_last_ntp = 0;
-    if (g_wifi_connected && now - s_last_ntp >= 60000UL) {
-        s_last_ntp = now;
-        if (g_ntp.update()) {
-            time_t utc   = (time_t)g_ntp.getEpochTime();
-            time_t local = g_tz->toLocal(utc);
-            setTime(local);
-        }
+    // Retry NTP once per minute until first successful sync
+    static unsigned long s_last_ntp_retry = 0;
+    if (g_wifi_connected && !g_time_synced && now - s_last_ntp_retry >= 60000UL) {
+        s_last_ntp_retry = now;
+        Serial.println("[ntp] Retrying startup sync...");
+        sync_time();
     }
 
     // Update offline state based on WiFi connection (not fetch failure)
     g_offline = !g_wifi_connected;
 
-    if ((g_first_fetch || (now - g_last_fetch >= (unsigned long)g_cfg.refresh_secs * 1000UL)) && g_wifi_connected) {
+    if ((g_first_fetch || (now - g_last_fetch >= (unsigned long)g_cfg.refresh_secs * 1000UL)) && g_wifi_connected && g_time_synced) {
         g_last_fetch  = now;
         g_first_fetch = false;
 
